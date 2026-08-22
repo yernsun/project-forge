@@ -1,0 +1,27 @@
+{
+  "app": {
+    "title": "应用工作台",
+    "subtitle": "由可组合的工程能力初始化",
+    "language": "语言",
+    "ready": "基础工程已就绪"
+  },
+  "items": {
+    "title": "条目",
+    "name": "名称",
+    "description": "说明",
+    "status": "状态",
+    "createdAt": "创建时间",
+    "create": "新建条目",
+    "refresh": "刷新",
+    "empty": "暂无条目",
+    "workspaceId": "工作区 ID",
+    "loadError": "加载条目失败"
+  },
+  "auth": {
+    "title": "登录",
+    "email": "邮箱",
+    "password": "密码",
+    "login": "登录",
+    "loginError": "登录失败"
+  }
+}

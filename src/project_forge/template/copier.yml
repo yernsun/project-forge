@@ -1,0 +1,49 @@
+_templates_suffix: .jinja
+_answers_file: .project-forge/copier-answers.yml
+
+project_name:
+  type: str
+  help: Human-facing project name
+  default: My Project
+
+project_slug:
+  type: str
+  help: Lowercase filesystem slug
+  default: "{{ project_name | lower | replace(' ', '-') }}"
+
+profile:
+  type: str
+  choices:
+    Frontend: frontend
+    Backend: backend
+    Full stack: fullstack
+  default: fullstack
+
+auth:
+  type: bool
+  default: false
+
+evented:
+  type: bool
+  default: false
+
+sample:
+  type: bool
+  default: true
+
+default_locale:
+  type: str
+  choices:
+    简体中文: zh-CN
+    English: en-US
+  default: zh-CN
+
+schema_version:
+  type: int
+  default: 1
+  when: false
+
+template_version:
+  type: str
+  default: 0.1.0
+  when: false

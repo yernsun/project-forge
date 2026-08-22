@@ -1,0 +1,30 @@
+server {
+    listen 8080;
+    server_name _;
+
+    location = /healthz {
+        access_log off;
+        add_header Content-Type text/plain;
+        return 200 'ok';
+    }
+
+{% if profile != 'frontend' %}    location /api/ {
+        proxy_pass http://api:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    location /health/ {
+        proxy_pass http://api:8000;
+        proxy_set_header Host $host;
+    }
+
+{% endif %}{% if profile != 'backend' %}    location / {
+        proxy_pass http://web:8080;
+        proxy_set_header Host $host;
+    }
+{% else %}    location / {
+        return 404;
+    }
+{% endif %}}

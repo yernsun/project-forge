@@ -1,0 +1,9 @@
+from app.main import app
+
+
+def test_expected_routes_are_registered_without_starting_database() -> None:
+    paths = set(app.openapi()["paths"])
+    assert "/health/live" in paths
+{% if sample and auth %}    assert "/api/v1/workspaces/{workspaceId}/items" in paths
+{% elif sample %}    assert "/api/v1/items" in paths
+{% endif %}

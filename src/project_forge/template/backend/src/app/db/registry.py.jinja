@@ -1,0 +1,12 @@
+from app.db.migration_engine import Migration
+{% if auth %}from app.db.migrations.auth import AUTH
+{% endif %}from app.db.migrations.core import CORE
+{% if evented %}from app.db.migrations.events import EVENTS
+{% endif %}{% if sample %}from app.db.migrations.items import ITEMS
+{% endif %}
+MIGRATIONS: tuple[Migration, ...] = (
+    CORE,
+{% if sample %}    ITEMS,
+{% endif %}{% if auth %}    AUTH,
+{% endif %}{% if evented %}    EVENTS,
+{% endif %})

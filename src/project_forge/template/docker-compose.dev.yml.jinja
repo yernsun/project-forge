@@ -1,0 +1,96 @@
+name: {{ project_slug }}-dev
+
+services:
+{% if profile != 'frontend' %}  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: app
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+{% if evented %}  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-dev:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+{% endif %}  migrate:
+    build:
+      context: ./backend
+    environment: &backend-env
+      DATABASE_URL: postgresql://app:app@db:5432/app
+      APP_ENV: development
+      APP_ALLOWED_ORIGINS: http://localhost:5173
+      APP_SESSION_COOKIE_SECURE: "false"
+{% if evented %}      REDIS_URL: redis://redis:6379/0
+{% endif %}    command: ["app", "migrate", "up"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build:
+      context: ./backend
+    environment: *backend-env
+    command: ["fastapi", "dev", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/src:/app/src
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+{% if evented %}      redis:
+        condition: service_healthy
+
+  event-relay:
+    build:
+      context: ./backend
+    environment: *backend-env
+    command: ["python", "-m", "app.events.worker", "relay"]
+    volumes:
+      - ./backend/src:/app/src
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+{% endif %}
+{% endif %}{% if profile != 'backend' %}  frontend:
+    build:
+      context: ./frontend
+      target: builder
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+    environment:
+      VITE_API_BASE_URL: ""
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - frontend-node-modules:/app/node_modules
+{% if profile == 'fullstack' %}    depends_on:
+      api:
+        condition: service_started
+{% endif %}{% endif %}
+
+volumes:
+{% if profile != 'frontend' %}  postgres-dev:
+{% if evented %}  redis-dev:
+{% endif %}{% endif %}{% if profile != 'backend' %}  frontend-node-modules:
+{% endif %}

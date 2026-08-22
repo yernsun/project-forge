@@ -1,0 +1,27 @@
+{
+  "app": {
+    "title": "Application workspace",
+    "subtitle": "Initialized with composable engineering capabilities",
+    "language": "Language",
+    "ready": "Project foundation is ready"
+  },
+  "items": {
+    "title": "Items",
+    "name": "Name",
+    "description": "Description",
+    "status": "Status",
+    "createdAt": "Created at",
+    "create": "Create item",
+    "refresh": "Refresh",
+    "empty": "No items yet",
+    "workspaceId": "Workspace ID",
+    "loadError": "Unable to load items"
+  },
+  "auth": {
+    "title": "Sign in",
+    "email": "Email",
+    "password": "Password",
+    "login": "Sign in",
+    "loginError": "Sign in failed"
+  }
+}

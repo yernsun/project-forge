@@ -1,0 +1,32 @@
+from __future__ import annotations
+
+from fastapi import FastAPI, Request, status
+from fastapi.responses import JSONResponse
+
+
+def install_error_handlers(app: FastAPI) -> None:
+{% if auth %}    from app.auth.service import AuthenticationError
+
+    @app.exception_handler(AuthenticationError)
+    async def authentication_failed(_: Request, error: AuthenticationError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"code": "authentication_failed", "message": str(error)},
+        )
+
+{% endif %}
+{% if sample %}    from app.services.items import ItemNotFoundError
+
+    @app.exception_handler(ItemNotFoundError)
+    async def item_not_found(_: Request, error: ItemNotFoundError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"code": "item_not_found", "message": str(error)},
+        )
+
+{% endif %}    @app.exception_handler(PermissionError)
+    async def permission_denied(_: Request, error: PermissionError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"code": "forbidden", "message": str(error)},
+        )

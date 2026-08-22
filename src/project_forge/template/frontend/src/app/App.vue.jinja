@@ -1,0 +1,47 @@
+<script setup lang="ts">
+{% if not sample %}import Button from 'primevue/button'
+{% endif %}
+import { usePrimeVue } from 'primevue/config'
+import { useI18n } from 'vue-i18n'
+{% if auth %}
+import LoginPanel from '@/features/auth/LoginPanel.vue'
+{% endif %}{% if sample %}import ItemsPage from '@/features/items/ItemsPage.vue'
+{% endif %}import { supportedLocales, type AppLocale } from '@/shared/i18n'
+import { useLocaleStore } from '@/shared/stores/locale'
+
+const { t } = useI18n()
+const localeStore = useLocaleStore()
+const primeVue = usePrimeVue()
+
+function changeLocale(event: Event): void {
+  const next = (event.target as HTMLSelectElement).value as AppLocale
+  localeStore.setLocale(next, primeVue)
+}
+</script>
+
+<template>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">{{ project_name }}</p>
+        <h1 v-text="t('app.title')" />
+        <p class="subtitle" v-text="t('app.subtitle')" />
+      </div>
+      <label class="locale-control">
+        <span v-text="t('app.language')" />
+        <select :value="localeStore.locale" @change="changeLocale">
+          <option v-for="locale in supportedLocales" :key="locale" :value="locale" v-text="locale" />
+        </select>
+      </label>
+    </header>
+    <main>
+{% if auth %}      <LoginPanel />
+{% endif %}{% if sample %}      <ItemsPage />
+{% else %}      <section class="hero-card">
+        <span class="status-dot" aria-hidden="true" />
+        <p v-text="t('app.ready')" />
+        <Button :label="t('app.ready')" icon="pi pi-check" disabled />
+      </section>
+{% endif %}    </main>
+  </div>
+</template>

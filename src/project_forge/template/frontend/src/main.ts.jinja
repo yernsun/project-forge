@@ -1,0 +1,21 @@
+import { VueQueryPlugin } from '@tanstack/vue-query'
+import Aura from '@primeuix/themes/aura'
+import { createPinia } from 'pinia'
+import PrimeVue from 'primevue/config'
+import 'primeicons/primeicons.css'
+import { createApp } from 'vue'
+
+import App from './app/App.vue'
+import { i18n, initialLocale, primeLocales } from './shared/i18n'
+import './styles.css'
+
+createApp(App)
+  .use(createPinia())
+  .use(i18n)
+  .use(VueQueryPlugin)
+  .use(PrimeVue, {
+    theme: { preset: Aura },
+    locale: primeLocales[initialLocale],
+    ripple: true,
+  })
+  .mount('#app')

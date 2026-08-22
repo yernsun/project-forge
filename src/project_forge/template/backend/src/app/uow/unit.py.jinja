@@ -1,0 +1,65 @@
+from __future__ import annotations
+
+import asyncio
+from contextlib import AbstractAsyncContextManager
+from types import TracebackType
+
+from psycopg.transaction import AsyncTransaction
+
+{% if auth %}from app.auth.repository import AuthRepository
+{% endif %}from app.db.types import DbConnection
+{% if evented %}from app.events.repository import OutboxRepository, ProcessedMessageRepository
+{% endif %}{% if sample %}from app.repositories.items import ItemRepository
+{% endif %}
+
+class UnitOfWork:
+    """One transaction, one task, one use only."""
+
+    def __init__(self, connection: DbConnection) -> None:
+        self._connection = connection
+        self._transaction: AbstractAsyncContextManager[AsyncTransaction] | None = None
+        self._owner: asyncio.Task[object] | None = None
+        self._entered = False
+        self._closed = False
+{% if sample %}        self.items: ItemRepository
+{% endif %}{% if auth %}        self.auth: AuthRepository
+{% endif %}{% if evented %}        self.outbox: OutboxRepository
+        self.processed_messages: ProcessedMessageRepository
+{% endif %}
+
+    async def __aenter__(self) -> UnitOfWork:
+        if self._entered or self._closed:
+            raise RuntimeError("UnitOfWork instances are single-use")
+        owner = asyncio.current_task()
+        if owner is None:
+            raise RuntimeError("UnitOfWork requires an active asyncio task")
+        self._owner = owner
+        self._entered = True
+        self._transaction = self._connection.transaction()
+        await self._transaction.__aenter__()
+{% if sample %}        self.items = ItemRepository(self._connection)
+{% endif %}{% if auth %}        self.auth = AuthRepository(self._connection)
+{% endif %}{% if evented %}        self.outbox = OutboxRepository(self._connection)
+        self.processed_messages = ProcessedMessageRepository(self._connection)
+{% endif %}        return self
+
+    def assert_owner(self) -> None:
+        if not self._entered or self._closed:
+            raise RuntimeError("UnitOfWork is not active")
+        if asyncio.current_task() is not self._owner:
+            raise RuntimeError("UnitOfWork cannot cross asyncio task boundaries")
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.assert_owner()
+        transaction = self._transaction
+        if transaction is None:
+            raise RuntimeError("UnitOfWork transaction was not initialized")
+        try:
+            await transaction.__aexit__(exc_type, exc_value, traceback)
+        finally:
+            self._closed = True

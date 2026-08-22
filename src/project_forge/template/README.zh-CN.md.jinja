@@ -1,0 +1,18 @@
+# {{ project_name }}
+
+该工程由 Project Forge {{ template_version }} 以 `{{ profile }}` 模式生成。
+
+- 认证：`{{ auth | lower }}`
+- 事件能力：`{{ evented | lower }}`
+- 示例纵切：`{{ sample | lower }}`
+- 默认语言：`{{ default_locale }}`
+
+开发前先复制环境变量，并运行统一检查：
+
+```bash
+cp .env.example .env
+python harness/check.py
+docker compose -f docker-compose.dev.yml up --build
+```
+
+修改代码前阅读 `AGENTS.md`，架构入口为 `docs/README.md`。

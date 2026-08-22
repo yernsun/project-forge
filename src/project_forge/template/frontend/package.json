@@ -1,0 +1,47 @@
+{
+  "name": "generated-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc -b && vite build",
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "vue-tsc -b",
+    "test": "vitest run",
+    "i18n:check": "node scripts/check-i18n.mjs",
+    "api:generate": "openapi-typescript ../openapi.json -o src/shared/api/schema.d.ts"
+  },
+  "dependencies": {
+    "@primeuix/themes": "^1.2.3",
+    "@tanstack/vue-query": "^5.90.2",
+    "openapi-fetch": "^0.14.0",
+    "pinia": "^3.0.3",
+    "primeicons": "^7.0.0",
+    "primevue": "^4.5.4",
+    "vue": "^3.5.22",
+    "vue-i18n": "^11.1.12"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.36.0",
+    "@types/node": "^24.5.2",
+    "@tsconfig/node22": "^22.0.2",
+    "@vitejs/plugin-vue": "^6.0.1",
+    "@vitest/coverage-v8": "^3.2.4",
+    "@vue/test-utils": "^2.4.6",
+    "@vue/tsconfig": "^0.8.1",
+    "eslint": "^9.36.0",
+    "eslint-plugin-vue": "^10.5.0",
+    "globals": "^16.4.0",
+    "jsdom": "^27.0.0",
+    "openapi-typescript": "^7.9.1",
+    "typescript": "~5.9.2",
+    "typescript-eslint": "^8.44.1",
+    "vite": "^7.1.7",
+    "vitest": "^3.2.4",
+    "vue-tsc": "^3.0.8"
+  }
+}

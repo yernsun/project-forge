@@ -1,0 +1,27 @@
+# {{ project_name }} Agent Guide
+
+Follow `.agents/rules/` before editing. Rules override documentation.
+
+## Architecture
+
+- Services own transaction boundaries and business workflows.
+- A Unit of Work is async, single-use, and bound to the task that opened it.
+- Repositories only execute persistence queries and map rows; they never commit or publish.
+- API handlers validate transport data and delegate to Services.
+- Durable state plus outbound events share the PostgreSQL outbox transaction boundary.
+- Frontend server state belongs in Vue Query; Pinia is only for client-owned state.
+- External JSON uses camelCase; internal Python and TypeScript implementation names follow their
+  language conventions.
+
+## SQL
+
+- Bind values with Psycopg named parameters.
+- Compose identifiers only through `psycopg.sql.Identifier` and explicit allowlists.
+- Keep hot-path query shapes fixed. Use typed repository-local filters for complex searches.
+- Append dynamic predicates in canonical order and distinguish an omitted filter from SQL `NULL`.
+- Never accept raw SQL fragments, column names, or sort directions from requests.
+
+## Validation
+
+Run `python harness/check.py`. Set `HARNESS_STRICT=1` to fail when optional tools are absent and
+`HARNESS_DOCKER=1` to include Compose configuration checks.

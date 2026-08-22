@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+{% if profile != 'frontend' %}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+{% endif %}{% if profile != 'backend' %}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+{% endif %}
+      - run: python harness/check.py

@@ -1,0 +1,94 @@
+<script setup lang="ts">
+import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
+import Button from 'primevue/button'
+import Column from 'primevue/column'
+import DataTable from 'primevue/datatable'
+import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
+
+import { createItem, listItems } from '@/shared/api/client'
+
+const { t } = useI18n()
+const queryClient = useQueryClient()
+const name = ref('')
+const description = ref('')
+{% if auth %}const workspaceId = ref(localStorage.getItem('app.workspaceId') ?? '')
+{% else %}const workspaceId = ref('')
+{% endif %}
+const queryKey = computed(() => ['items', workspaceId.value])
+const query = useQuery({
+  queryKey,
+  queryFn: () => listItems(workspaceId.value || undefined),
+{% if auth %}  enabled: computed(() => workspaceId.value.length > 0),
+{% endif %}})
+const mutation = useMutation({
+  mutationFn: () =>
+    createItem(
+      { name: name.value, description: description.value || null },
+      workspaceId.value || undefined,
+    ),
+  onSuccess: async () => {
+    name.value = ''
+    description.value = ''
+    await queryClient.invalidateQueries({ queryKey: queryKey.value })
+  },
+})
+
+{% if auth %}function rememberWorkspace(): void {
+  localStorage.setItem('app.workspaceId', workspaceId.value)
+}
+{% endif %}
+</script>
+
+<template>
+  <section class="content-card">
+    <div class="section-heading">
+      <h2 v-text="t('items.title')" />
+      <Button
+        :label="t('items.refresh')"
+        icon="pi pi-refresh"
+        severity="secondary"
+        variant="outlined"
+        :loading="query.isFetching.value"
+        @click="query.refetch()"
+      />
+    </div>
+{% if auth %}    <label class="field workspace-field">
+      <span v-text="t('items.workspaceId')" />
+      <input v-model.trim="workspaceId" type="text" @change="rememberWorkspace" />
+    </label>
+{% endif %}    <form class="create-form" @submit.prevent="mutation.mutate()">
+      <label class="field">
+        <span v-text="t('items.name')" />
+        <input v-model.trim="name" required maxlength="200" />
+      </label>
+      <label class="field">
+        <span v-text="t('items.description')" />
+        <input v-model.trim="description" maxlength="2000" />
+      </label>
+      <Button
+        type="submit"
+        :label="t('items.create')"
+        icon="pi pi-plus"
+        :loading="mutation.isPending.value"
+        :disabled="!name{% if auth %} || !workspaceId{% endif %}"
+      />
+    </form>
+    <p v-if="query.isError.value" class="error-message" v-text="t('items.loadError')" />
+    <DataTable
+      :value="query.data.value ?? []"
+      data-key="itemId"
+      striped-rows
+      paginator
+      :rows="20"
+      :loading="query.isLoading.value"
+      :empty-message="t('items.empty')"
+      table-style="min-width: 48rem"
+    >
+      <Column field="name" :header="t('items.name')" sortable />
+      <Column field="description" :header="t('items.description')" />
+      <Column field="status" :header="t('items.status')" sortable />
+      <Column field="createdAt" :header="t('items.createdAt')" sortable />
+    </DataTable>
+  </section>
+</template>

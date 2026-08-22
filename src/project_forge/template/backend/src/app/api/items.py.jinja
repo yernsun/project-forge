@@ -1,0 +1,96 @@
+from __future__ import annotations
+
+from typing import Annotated
+from uuid import UUID
+
+from fastapi import APIRouter, Path, Query, status
+from pydantic import Field
+
+from app.api.dependencies import UnitOfWorkFactoryDep
+from app.api.models import StrictApiModel
+{% if auth %}from app.auth.api import CurrentSessionDep
+{% endif %}from app.domain.items import UNSET, Item, ItemFilter, ItemSort, ItemStatus
+from app.services.items import ItemService
+
+router = APIRouter(
+{% if auth %}    prefix="/api/v1/workspaces/{workspaceId}/items",
+{% else %}    prefix="/api/v1/items",
+{% endif %}    tags=["items"],
+)
+
+
+class CreateItemRequest(StrictApiModel):
+    name: str = Field(min_length=1, max_length=200, description="Display name")
+    description: str | None = Field(default=None, max_length=2000, description="Optional details")
+
+
+class ItemListResponse(StrictApiModel):
+    items: tuple[Item, ...] = Field(description="Current page")
+
+
+@router.post("", status_code=status.HTTP_201_CREATED)
+async def create_item(
+    request: CreateItemRequest,
+    unit_of_work_factory: UnitOfWorkFactoryDep,
+{% if auth %}    session: CurrentSessionDep,
+    workspace_id: Annotated[UUID, Path(alias="workspaceId", description="Workspace ID")],
+{% endif %}) -> Item:
+    service = ItemService(unit_of_work_factory)
+    return await service.create(
+{% if auth %}        workspace_id=workspace_id,
+        user_id=session.user_id,
+{% else %}        workspace_id=None,
+{% endif %}        name=request.name,
+        description=request.description,
+    )
+
+
+@router.get("/{itemId}")
+async def get_item(
+    item_id: Annotated[UUID, Path(alias="itemId", description="Item ID")],
+    unit_of_work_factory: UnitOfWorkFactoryDep,
+{% if auth %}    session: CurrentSessionDep,
+    workspace_id: Annotated[UUID, Path(alias="workspaceId", description="Workspace ID")],
+{% endif %}) -> Item:
+    service = ItemService(unit_of_work_factory)
+    return await service.get(
+        item_id,
+{% if auth %}        workspace_id,
+        session.user_id,
+{% else %}        None,
+{% endif %}    )
+
+
+@router.get("")
+async def list_items(
+    unit_of_work_factory: UnitOfWorkFactoryDep,
+{% if auth %}    session: CurrentSessionDep,
+    workspace_id: Annotated[UUID, Path(alias="workspaceId", description="Workspace ID")],
+{% endif %}    name: Annotated[str | None, Query(max_length=200, description="Name contains")] = None,
+    status_filter: Annotated[
+        ItemStatus | None, Query(alias="status", description="Exact lifecycle status")
+    ] = None,
+    description_is_null: Annotated[
+        bool, Query(alias="descriptionIsNull", description="Filter SQL NULL descriptions")
+    ] = False,
+    sort: Annotated[ItemSort, Query(description="Whitelisted sort mode")] = ItemSort.CREATED_DESC,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> ItemListResponse:
+    filters = ItemFilter(
+        name=name if name is not None else UNSET,
+        description=None if description_is_null else UNSET,
+        status=status_filter if status_filter is not None else UNSET,
+        sort=sort,
+        limit=limit,
+        offset=offset,
+    )
+    service = ItemService(unit_of_work_factory)
+    items = await service.list(
+{% if auth %}        workspace_id,
+        filters,
+        session.user_id,
+{% else %}        None,
+        filters,
+{% endif %}    )
+    return ItemListResponse(items=items)

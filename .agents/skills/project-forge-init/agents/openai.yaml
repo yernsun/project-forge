@@ -1,0 +1,6 @@
+interface:
+  display_name: "Project Forge Init"
+  short_description: "Initialize governed frontend and backend projects"
+  default_prompt: "Use $project-forge-init to initialize a governed full-stack project."
+policy:
+  allow_implicit_invocation: true

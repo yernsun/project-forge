@@ -1,0 +1,81 @@
+from __future__ import annotations
+
+from uuid import UUID, uuid4
+
+from app.domain.base import utc_now
+from app.domain.items import Item, ItemFilter, ItemStatus
+{% if evented %}from app.events.models import EventEnvelope
+{% endif %}from app.uow.factory import UnitOfWorkFactory
+{% if auth %}from app.uow.unit import UnitOfWork
+{% endif %}
+
+class ItemNotFoundError(LookupError):
+    pass
+
+
+class ItemService:
+    def __init__(self, unit_of_work_factory: UnitOfWorkFactory) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+
+{% if auth %}    @staticmethod
+    async def _require_membership(
+        unit_of_work: UnitOfWork, user_id: UUID, workspace_id: UUID
+    ) -> None:
+        if not await unit_of_work.auth.is_workspace_member(user_id, workspace_id):
+            raise PermissionError("workspace membership required")
+
+{% endif %}    async def create(
+        self,
+        *,
+        workspace_id: UUID | None,
+{% if auth %}        user_id: UUID,
+{% endif %}        name: str,
+        description: str | None,
+    ) -> Item:
+        now = utc_now()
+        item = Item(
+            item_id=uuid4(),
+            workspace_id=workspace_id,
+            name=name,
+            description=description,
+            status=ItemStatus.ACTIVE,
+            version=1,
+            created_at=now,
+            updated_at=now,
+        )
+        async with self._unit_of_work_factory() as unit_of_work:
+{% if auth %}            if workspace_id is None:
+                raise ValueError("workspace_id is required with auth")
+            await self._require_membership(unit_of_work, user_id, workspace_id)
+{% endif %}            created = await unit_of_work.items.add(item)
+{% if evented %}            await unit_of_work.outbox.append(
+                EventEnvelope.new("item.created", created.model_dump(by_alias=True, mode="json"))
+            )
+{% endif %}            return created
+
+    async def get(
+        self,
+        item_id: UUID,
+        workspace_id: UUID | None,
+{% if auth %}        user_id: UUID,
+{% endif %}    ) -> Item:
+        async with self._unit_of_work_factory() as unit_of_work:
+{% if auth %}            if workspace_id is None:
+                raise ValueError("workspace_id is required with auth")
+            await self._require_membership(unit_of_work, user_id, workspace_id)
+{% endif %}            item = await unit_of_work.items.get(item_id, workspace_id)
+            if item is None:
+                raise ItemNotFoundError(str(item_id))
+            return item
+
+    async def list(
+        self,
+        workspace_id: UUID | None,
+        filters: ItemFilter,
+{% if auth %}        user_id: UUID,
+{% endif %}    ) -> tuple[Item, ...]:
+        async with self._unit_of_work_factory() as unit_of_work:
+{% if auth %}            if workspace_id is None:
+                raise ValueError("workspace_id is required with auth")
+            await self._require_membership(unit_of_work, user_id, workspace_id)
+{% endif %}            return await unit_of_work.items.list(workspace_id, filters)

@@ -1,0 +1,36 @@
+import createClient from 'openapi-fetch'
+
+import type { components, paths } from './schema'
+
+export type ItemDto = components['schemas']['Item']
+export type CreateItemDto = components['schemas']['CreateItemRequest']
+
+const client = createClient<paths>({
+  baseUrl: import.meta.env.VITE_API_BASE_URL ?? '',
+  credentials: 'include',
+})
+
+export async function listItems(workspaceId?: string): Promise<ItemDto[]> {
+{% if auth %}  if (!workspaceId) return []
+  const { data, error } = await client.GET('/api/v1/workspaces/{workspaceId}/items', {
+    params: { path: { workspaceId }, query: { limit: 100 } },
+  })
+{% else %}  void workspaceId
+  const { data, error } = await client.GET('/api/v1/items', {
+    params: { query: { limit: 100 } },
+  })
+{% endif %}  if (error || !data) throw new Error('items request failed')
+  return data.items
+}
+
+export async function createItem(input: CreateItemDto, workspaceId?: string): Promise<ItemDto> {
+{% if auth %}  if (!workspaceId) throw new Error('workspace ID is required')
+  const { data, error } = await client.POST('/api/v1/workspaces/{workspaceId}/items', {
+    params: { path: { workspaceId } },
+    body: input,
+  })
+{% else %}  void workspaceId
+  const { data, error } = await client.POST('/api/v1/items', { body: input })
+{% endif %}  if (error || !data) throw new Error('create item request failed')
+  return data
+}
