@@ -21,9 +21,14 @@ three-way updates. Do not edit either file manually.
 ## Prerequisites
 
 - Git and Docker Engine with Compose v2 for the complete workflow.
-{% if profile != 'frontend' %}- Python `>=3.13` and uv for backend development.
-{% endif %}{% if profile != 'backend' %}- Node.js `>=22.12,<23` and npm for frontend development.
+{% if profile != 'frontend' %}- Python `>=3.11` and uv for backend development.
+{% endif %}{% if profile != 'backend' %}- Node.js `>=22.12,<27` and npm for frontend development.
 {% endif %}
+
+Backend containers use Python 3.13 by default. Frontend containers and generated CI use Node 24.
+Project Forge tests Python 3.11 through 3.14 and every Node major from 22 through 26. The Node 22
+type definitions deliberately keep application code on the oldest supported API surface; Node 23
+and 25 are compatibility targets only and should not be used for production because they are EOL.
 
 Check the profile-aware toolchain after committing the generated baseline:
 
@@ -240,6 +245,17 @@ project-forge update .
 
 Project Forge supports additive `add`/`enable` operations and does not remove capabilities. Update
 conflicts preserve all managed files and create `.rej` files for manual resolution.
+
+When the installed tool and project both report `0.2.0`, `update --check` cannot detect a refreshed
+same-version template from the version string alone. To apply this runtime compatibility refresh,
+reinstall the tool source, verify a clean worktree, and run the update directly:
+
+```bash
+uv tool upgrade --reinstall project-forge
+git status --short
+project-forge update .
+python3 harness/check.py
+```
 
 Read `AGENTS.md` before editing. Use [`docs/README.md`](docs/README.md) to find the architecture
 rules for Service/UoW/Repository boundaries, SQL, migrations, i18n, authentication, and events.

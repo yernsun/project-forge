@@ -8,6 +8,20 @@ on:
 jobs:
   generator-quality:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --all-groups --frozen
+      - run: uv run --frozen python harness/check.py
+
+  openapi-contracts:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -15,11 +29,10 @@ jobs:
           python-version: "3.13"
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
           cache-dependency-path: src/project_forge/template/frontend/package-lock.json
       - run: uv sync --all-groups --frozen
-      - run: uv run --frozen python harness/check.py
       - run: uv run --frozen python harness/manage_openapi_contracts.py --check
 
   generated-projects:
@@ -80,7 +93,7 @@ jobs:
           python-version: "3.13"
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
           cache-dependency-path: src/project_forge/template/frontend/package-lock.json
       - run: uv sync --all-groups --frozen
@@ -96,6 +109,83 @@ jobs:
         working-directory: generated
         run: python harness/check.py
 
+  backend-runtime-compatibility:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: app
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U app -d app"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    env:
+      DATABASE_URL: postgresql://app:app@localhost:5432/app
+      TEST_DATABASE_URL: postgresql://app:app@localhost:5432/app
+      POSTGRES_PASSWORD: ci-postgres-password
+      APP_ALLOWED_ORIGINS: http://localhost:5173
+      APP_AUTH_RATE_LIMIT_SECRET: ci-rate-limit-secret-at-least-32-bytes
+      FORWARDED_ALLOW_IPS: 127.0.0.1
+      PROJECT_FORGE_DESTRUCTIVE_PG_TESTS: "1"
+      HARNESS_STRICT: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --all-groups --frozen
+      - name: Render maximal backend fixture
+        run: >-
+          uv run --frozen project-forge init generated
+          --profile backend --auth --evented --sample --no-git
+      - name: Apply generated migrations
+        working-directory: generated/backend
+        run: |
+          uv sync --frozen --all-groups --extra auth --extra evented
+          uv run --frozen --no-sync app migrate up
+      - name: Validate backend on Python ${{ matrix.python-version }}
+        working-directory: generated
+        run: python harness/check.py
+
+  frontend-runtime-compatibility:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["22", "23", "24", "25", "26"]
+    env:
+      HARNESS_STRICT: "1"
+      FRONTEND_API_UPSTREAM: http://host.docker.internal:8000
+      npm_config_engine_strict: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: src/project_forge/template/frontend/package-lock.json
+      - run: uv sync --all-groups --frozen
+      - name: Render frontend fixture
+        run: >-
+          uv run --frozen project-forge init generated
+          --profile frontend --sample --no-git
+      - name: Validate frontend on Node ${{ matrix.node-version }}
+        working-directory: generated
+        run: python harness/check.py
+
   fullstack-auth-compose-e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -106,7 +196,7 @@ jobs:
           python-version: "3.13"
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
           cache-dependency-path: src/project_forge/template/frontend/package-lock.json
       - run: uv sync --all-groups --frozen
@@ -149,14 +239,18 @@ jobs:
 
   package-command:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
       - run: uv sync --all-groups --frozen
       - run: uv build
-      - run: uv tool install --force dist/project_forge-*.whl
+      - run: uv tool install --python ${{ matrix.python-version }} --force dist/project_forge-*.whl
       - run: echo "$(uv tool dir --bin)" >> "$GITHUB_PATH"
       - run: project-forge --version
       - run: |

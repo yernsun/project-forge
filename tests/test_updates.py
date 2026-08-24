@@ -5,6 +5,7 @@ import stat
 import subprocess
 import tarfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
@@ -42,8 +43,7 @@ def rewrite_baseline_file(
 ) -> None:
     archive = project / ".project-forge/baseline.tar.gz"
     extracted.mkdir()
-    with tarfile.open(archive, "r:gz") as bundle:
-        bundle.extractall(extracted, filter="data")
+    renderer._extract_baseline(project, extracted)
     target = extracted / relative
     target.write_bytes(content)
     target.chmod(mode)
@@ -51,6 +51,61 @@ def rewrite_baseline_file(
         for path in sorted(extracted.rglob("*")):
             if path.is_file():
                 bundle.add(path, arcname=path.relative_to(extracted).as_posix())
+
+
+def test_baseline_extraction_uses_validated_regular_files_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = tmp_path / "project"
+    state = ProjectState.create("Safe Baseline", profile=Profile.BACKEND, sample=False)
+    initialize_project(state, project)
+
+    def reject_extractall(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("extractall must not be used")
+
+    monkeypatch.setattr(tarfile.TarFile, "extractall", reject_extractall)
+    extracted = tmp_path / "extracted"
+    renderer._extract_baseline(project, extracted)
+
+    assert (extracted / "backend/src/app/main.py").is_file()
+    assert stat.S_IMODE((extracted / "backend/src/app/cli.py").stat().st_mode) in {
+        0o644,
+        0o755,
+    }
+
+
+def test_baseline_extraction_rejects_junction_destination(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = tmp_path / "project"
+    state = ProjectState.create("Safe Destination", profile=Profile.BACKEND, sample=False)
+    initialize_project(state, project)
+    destination = tmp_path / "junction"
+    destination.mkdir()
+    monkeypatch.setattr(renderer, "_is_junction", lambda path: path == destination)
+
+    with pytest.raises(renderer.ProjectForgeError, match="empty real directory"):
+        renderer._extract_baseline(project, destination)
+
+
+def test_junction_detection_supports_modern_and_python_311_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ModernPath:
+        def is_junction(self) -> bool:
+            return True
+
+        def lstat(self) -> object:
+            raise AssertionError("modern junction checks must be preferred")
+
+    class LegacyWindowsPath:
+        def lstat(self) -> object:
+            return SimpleNamespace(st_file_attributes=0x400)
+
+    monkeypatch.setattr(renderer.stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400, raising=False)
+
+    assert renderer._is_junction(ModernPath()) is True  # type: ignore[arg-type]
+    assert renderer._is_junction(LegacyWindowsPath()) is True  # type: ignore[arg-type]
 
 
 def test_monotonic_component_add_preserves_user_files(tmp_path: Path) -> None:
@@ -114,6 +169,86 @@ def test_frontend_to_backend_to_auth_evolution_updates_state_and_baseline(
     assert "notes.md" not in managed
 
 
+def test_same_version_update_migrates_legacy_runtime_contracts(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    state = ProjectState.create(
+        "Compatibility Update",
+        profile=Profile.FULLSTACK,
+        sample=False,
+    )
+    initialize_project(state, project)
+    archive = project / ".project-forge/baseline.tar.gz"
+    extracted = tmp_path / "legacy-baseline"
+    extracted.mkdir()
+    renderer._extract_baseline(project, extracted)
+
+    types_path = Path("backend/src/app/db/types.py")
+    backend_project_path = Path("backend/pyproject.toml")
+    backend_lock_path = Path("backend/uv.lock")
+    frontend_package_path = Path("frontend/package.json")
+    frontend_lock_path = Path("frontend/package-lock.json")
+    frontend_dockerfile_path = Path("frontend/Dockerfile")
+    legacy_types = b"""from __future__ import annotations
+
+from typing import Any
+
+from psycopg import AsyncConnection
+from psycopg_pool import AsyncConnectionPool
+
+type DbRow = dict[str, Any]
+type DbConnection = AsyncConnection[DbRow]
+type DbPool = AsyncConnectionPool[DbConnection]
+"""
+    replacements = {
+        types_path: legacy_types,
+        backend_project_path: (project / backend_project_path)
+        .read_bytes()
+        .replace(b'requires-python = ">=3.11"', b'requires-python = ">=3.13"')
+        .replace(b'target-version = "py311"', b'target-version = "py313"')
+        .replace(b'python_version = "3.11"', b'python_version = "3.13"'),
+        backend_lock_path: (project / backend_lock_path)
+        .read_bytes()
+        .replace(b'requires-python = ">=3.11"', b'requires-python = ">=3.13"', 1),
+        frontend_package_path: (project / frontend_package_path)
+        .read_bytes()
+        .replace(b'">=22.12 <27"', b'">=22.12 <23"'),
+        frontend_lock_path: (project / frontend_lock_path)
+        .read_bytes()
+        .replace(b'">=22.12 <27"', b'">=22.12 <23"'),
+        frontend_dockerfile_path: (project / frontend_dockerfile_path)
+        .read_bytes()
+        .replace(b"FROM node:24-bookworm-slim", b"FROM node:22-bookworm-slim"),
+    }
+    for relative, content in replacements.items():
+        (project / relative).write_bytes(content)
+        (extracted / relative).write_bytes(content)
+    with tarfile.open(archive, "w:gz") as bundle:
+        for path in sorted(extracted.rglob("*")):
+            if path.is_file():
+                bundle.add(path, arcname=path.relative_to(extracted).as_posix())
+    user_file = project / "notes.md"
+    user_file.write_text("preserve me\n", encoding="utf-8")
+    commit_all(project, "legacy 0.2.0 runtime contracts")
+
+    result = CliRunner().invoke(app, ["update", str(project)])
+
+    assert result.exit_code == 0, result.output
+    assert "TypeAlias" in (project / types_path).read_text(encoding="utf-8")
+    assert ">=3.11" in (project / backend_project_path).read_text(encoding="utf-8")
+    assert '"node": ">=22.12 <27"' in (project / frontend_package_path).read_text(
+        encoding="utf-8"
+    )
+    assert (project / frontend_dockerfile_path).read_text(encoding="utf-8").startswith(
+        "FROM node:24-bookworm-slim"
+    )
+    assert load_state(project).template_version == "0.2.0"
+    assert user_file.read_text(encoding="utf-8") == "preserve me\n"
+
+    updated_baseline = tmp_path / "updated-baseline"
+    renderer._extract_baseline(project, updated_baseline)
+    assert "TypeAlias" in (updated_baseline / types_path).read_text(encoding="utf-8")
+
+
 def test_double_modified_file_produces_rejection_without_overwrite(tmp_path: Path) -> None:
     project = tmp_path / "project"
     state = ProjectState.create("Conflict App", profile=Profile.BACKEND, sample=False)
@@ -124,8 +259,7 @@ def test_double_modified_file_produces_rejection_without_overwrite(tmp_path: Pat
     archive = metadata / "baseline.tar.gz"
     extracted = tmp_path / "baseline"
     extracted.mkdir()
-    with tarfile.open(archive, "r:gz") as bundle:
-        bundle.extractall(extracted, filter="data")
+    renderer._extract_baseline(project, extracted)
     readme = extracted / "README.md"
     original = readme.read_text(encoding="utf-8")
     readme.write_text(original.replace("# Conflict App", "# Old title", 1), encoding="utf-8")
@@ -157,8 +291,7 @@ def test_conflict_preflight_does_not_apply_other_planned_changes(tmp_path: Path)
     archive = project / ".project-forge/baseline.tar.gz"
     extracted = tmp_path / "baseline"
     extracted.mkdir()
-    with tarfile.open(archive, "r:gz") as bundle:
-        bundle.extractall(extracted, filter="data")
+    renderer._extract_baseline(project, extracted)
 
     baseline_readme = extracted / "README.md"
     baseline_readme.write_text(
@@ -213,8 +346,7 @@ def test_update_applies_template_mode_only_change(tmp_path: Path) -> None:
     archive = project / ".project-forge/baseline.tar.gz"
     extracted = tmp_path / "mode-baseline"
     extracted.mkdir()
-    with tarfile.open(archive, "r:gz") as bundle:
-        bundle.extractall(extracted, filter="data")
+    renderer._extract_baseline(project, extracted)
     baseline_target = extracted / target.relative_to(project)
     baseline_target.chmod(legacy_mode)
     target.chmod(legacy_mode)

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypeAlias
 
 from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 
-type DbRow = dict[str, Any]
-type DbConnection = AsyncConnection[DbRow]
-type DbPool = AsyncConnectionPool[DbConnection]
+DbRow: TypeAlias = dict[str, Any]
+DbConnection: TypeAlias = AsyncConnection[DbRow]
+DbPool: TypeAlias = AsyncConnectionPool[DbConnection]

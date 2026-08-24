@@ -254,7 +254,18 @@ def _api_boundary_problems(
 
 
 def scan(path: Path) -> list[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    try:
+        tree = ast.parse(
+            path.read_text(encoding="utf-8"),
+            filename=str(path),
+            feature_version=(3, 11),
+        )
+    except SyntaxError as error:
+        location = f":{error.lineno}" if error.lineno is not None else ""
+        return [
+            f"{path}{location}: Python source must be compatible with Python 3.11: "
+            f"{error.msg}"
+        ]
     modules, bindings = _import_facts(tree, path)
     candidates = _module_candidates(modules, bindings)
     problems: list[str] = []

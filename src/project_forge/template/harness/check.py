@@ -25,7 +25,7 @@ def require(tool: str) -> bool:
     return found
 
 
-def main() -> int:
+def _run_checks() -> int:
     run([sys.executable, "harness/check_architecture.py"])
     run([sys.executable, "harness/check_sql.py"])
     run([sys.executable, "harness/check_i18n.py"])
@@ -75,6 +75,16 @@ def main() -> int:
         run(["docker", "compose", "-f", "docker-compose.dev.yml", "config"])
         run(["docker", "compose", "-f", "docker-compose.yml", "config"])
     return 0
+
+
+def main() -> int:
+    try:
+        return _run_checks()
+    except subprocess.CalledProcessError as error:
+        return error.returncode if error.returncode > 0 else 1
+    except RuntimeError as error:
+        print(f"harness error: {error}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

@@ -128,9 +128,12 @@ def test_every_valid_combination_renders(state: ProjectState, tmp_path: Path) ->
     else:
         assert "FRONTEND_API_UPSTREAM" not in workflow_environment
 
-    if state.has_backend:
-        for path in (destination / "backend/src").rglob("*.py"):
-            ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for path in destination.rglob("*.py"):
+        ast.parse(
+            path.read_text(encoding="utf-8"),
+            filename=str(path),
+            feature_version=(3, 11),
+        )
     if state.has_frontend:
         for locale_name in ("zh-CN.json", "en-US.json"):
             json.loads(

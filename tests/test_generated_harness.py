@@ -77,8 +77,19 @@ def test_static_generated_harnesses_pass(state: ProjectState, tmp_path: Path) ->
         for step in validate["steps"]
         if step.get("uses") == "actions/setup-node@v4"
     ]
+    python_steps = [
+        step
+        for step in validate["steps"]
+        if step.get("uses") == "astral-sh/setup-uv@v6"
+    ]
+    if state.has_backend:
+        assert python_steps and all(
+            step["with"]["python-version"] == "3.13" for step in python_steps
+        )
+    else:
+        assert not python_steps
     if state.has_frontend:
-        assert node_steps and all(step["with"]["node-version"] == "22" for step in node_steps)
+        assert node_steps and all(step["with"]["node-version"] == "24" for step in node_steps)
     else:
         assert not node_steps
 
@@ -102,13 +113,48 @@ def test_static_generated_harnesses_pass(state: ProjectState, tmp_path: Path) ->
         }
 
 
+def test_top_level_harness_reports_python_311_syntax_cleanly(tmp_path: Path) -> None:
+    destination = tmp_path / "project"
+    render_fresh(
+        ProjectState.create("Python Floor", profile=Profile.BACKEND, sample=False),
+        destination,
+    )
+    incompatible = destination / "backend/src/app/domain/incompatible.py"
+    incompatible.write_text("type NewAlias = dict[str, object]\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, "harness/check.py"],
+        cwd=destination,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "compatible with Python 3.11" in result.stderr
+    assert "incompatible.py:1" in result.stderr
+    assert "Traceback" not in result.stdout + result.stderr
+
+
 def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
     workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
     quality = workflow["jobs"]["generator-quality"]
-    node_steps = [step for step in quality["steps"] if step.get("uses") == "actions/setup-node@v4"]
-    assert node_steps[0]["with"]["node-version"] == "22"
+    assert quality["strategy"]["matrix"]["python-version"] == [
+        "3.11",
+        "3.12",
+        "3.13",
+        "3.14",
+    ]
     quality_commands = "\n".join(str(step.get("run", "")) for step in quality["steps"])
-    assert "harness/manage_openapi_contracts.py --check" in quality_commands
+    assert "harness/check.py" in quality_commands
+
+    contracts = workflow["jobs"]["openapi-contracts"]
+    contract_node_steps = [
+        step for step in contracts["steps"] if step.get("uses") == "actions/setup-node@v4"
+    ]
+    assert contract_node_steps[0]["with"]["node-version"] == "24"
+    contract_commands = "\n".join(str(step.get("run", "")) for step in contracts["steps"])
+    assert "harness/manage_openapi_contracts.py --check" in contract_commands
 
     generated = workflow["jobs"]["generated-projects"]
     assert generated["services"]["postgres"]["image"] == "postgres:16-alpine"
@@ -124,7 +170,7 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
         for step in generated["steps"]
         if step.get("uses") == "actions/setup-node@v4"
     ]
-    assert generated_node_steps[0]["with"]["node-version"] == "22"
+    assert generated_node_steps[0]["with"]["node-version"] == "24"
     steps = "\n".join(str(step.get("run", "")) for step in generated["steps"])
     assert "uv sync --frozen --all-groups" in steps
     assert "uv run --frozen --no-sync app migrate up" in steps
@@ -132,11 +178,37 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
     e2e_node_steps = [
         step for step in e2e["steps"] if step.get("uses") == "actions/setup-node@v4"
     ]
-    assert e2e_node_steps[0]["with"]["node-version"] == "22"
+    assert e2e_node_steps[0]["with"]["node-version"] == "24"
     e2e_steps = "\n".join(str(step.get("run", "")) for step in e2e["steps"])
     assert "--profile fullstack --auth --sample --no-git" in e2e_steps
     assert "docker compose -f docker-compose.dev.yml up -d --build" in e2e_steps
     assert "npm run e2e" in e2e_steps
+
+    backend_compatibility = workflow["jobs"]["backend-runtime-compatibility"]
+    assert backend_compatibility["strategy"]["matrix"]["python-version"] == [
+        "3.11",
+        "3.12",
+        "3.13",
+        "3.14",
+    ]
+    backend_commands = "\n".join(
+        str(step.get("run", "")) for step in backend_compatibility["steps"]
+    )
+    assert "--profile backend --auth --evented --sample --no-git" in backend_commands
+    assert "--extra auth --extra evented" in backend_commands
+
+    frontend_compatibility = workflow["jobs"]["frontend-runtime-compatibility"]
+    assert frontend_compatibility["strategy"]["matrix"]["node-version"] == [
+        "22",
+        "23",
+        "24",
+        "25",
+        "26",
+    ]
+    assert frontend_compatibility["env"]["npm_config_engine_strict"] == "true"
+
+    package = workflow["jobs"]["package-command"]
+    assert package["strategy"]["matrix"]["python-version"] == ["3.11", "3.14"]
 
 
 def test_architecture_harness_rejects_boundary_bypasses(tmp_path: Path) -> None:

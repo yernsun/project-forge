@@ -21,9 +21,14 @@
 ## 环境要求
 
 - 完整工作流需要 Git、Docker Engine 和 Compose v2。
-{% if profile != 'frontend' %}- 后端本地开发需要 Python `>=3.13` 和 uv。
-{% endif %}{% if profile != 'backend' %}- 前端本地开发需要 Node.js `>=22.12,<23` 和 npm。
+{% if profile != 'frontend' %}- 后端本地开发需要 Python `>=3.11` 和 uv。
+{% endif %}{% if profile != 'backend' %}- 前端本地开发需要 Node.js `>=22.12,<27` 和 npm。
 {% endif %}
+
+后端容器默认使用 Python 3.13，前端容器和生成项目 CI 默认使用 Node 24。Project Forge
+覆盖 Python 3.11～3.14 和 Node 22～26 的每个主版本。保留 Node 22 类型定义是为了将应用
+代码限制在最低支持版本已有的 API 表面；Node 23 和 25 只作为兼容目标，已 EOL，不应用于
+生产。
 
 提交生成基线后，执行与 profile 匹配的环境检查：
 
@@ -237,6 +242,16 @@ project-forge update .
 
 Project Forge 支持单向 `add`/`enable`，不移除能力。更新冲突会保留全部受管文件，并生成
 `.rej` 供人工解决。
+
+当已安装工具和工程都显示 `0.2.0` 时，`update --check` 无法仅凭版本号识别同版本模板已
+刷新。应用本次运行时兼容改造时，应重新安装工具来源、确认工作区干净并直接更新：
+
+```bash
+uv tool upgrade --reinstall project-forge
+git status --short
+project-forge update .
+python3 harness/check.py
+```
 
 修改代码前阅读 `AGENTS.md`。架构导航见 [`docs/README.md`](docs/README.md)，其中包含
 Service/UoW/Repository、SQL、迁移、i18n、认证和事件规则。

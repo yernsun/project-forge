@@ -1,4 +1,5 @@
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -48,7 +49,29 @@ def test_state_validation_resolves_missing_sample_for_frontend() -> None:
     assert state.sample is False
 
 
-def test_frontend_runtime_and_types_target_supported_node_22_range() -> None:
+def test_python_runtime_contracts_target_311_and_locks_match() -> None:
+    root_project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    backend_root = ROOT / "src/project_forge/template/backend"
+    backend_project = tomllib.loads(
+        (backend_root / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    root_lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
+    backend_lock = tomllib.loads((backend_root / "uv.lock").read_text(encoding="utf-8"))
+
+    for project in (root_project, backend_project):
+        assert project["project"]["requires-python"] == ">=3.11"
+        assert project["tool"]["ruff"]["target-version"] == "py311"
+        assert project["tool"]["mypy"]["python_version"] == "3.11"
+    assert root_lock["requires-python"] == ">=3.11"
+    assert backend_lock["requires-python"] == ">=3.11"
+    backend_dockerfile = (backend_root / "Dockerfile.jinja").read_text(encoding="utf-8")
+    assert backend_dockerfile.startswith(
+        "FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim"
+    )
+    assert "FROM python:3.13-slim-bookworm AS runtime" in backend_dockerfile
+
+
+def test_frontend_runtime_range_uses_node_22_type_floor_and_node_24_image() -> None:
     frontend = ROOT / "src/project_forge/template/frontend"
     package = json.loads((frontend / "package.json").read_text(encoding="utf-8"))
     package_lock = json.loads(
@@ -57,11 +80,14 @@ def test_frontend_runtime_and_types_target_supported_node_22_range() -> None:
     locked_root = package_lock["packages"][""]
     locked_node_types = package_lock["packages"]["node_modules/@types/node"]
 
-    assert package["engines"]["node"] == ">=22.12 <23"
+    assert package["engines"]["node"] == ">=22.12 <27"
     assert locked_root["engines"] == package["engines"]
     assert package["devDependencies"]["@types/node"] == "^22.12.0"
     assert locked_root["devDependencies"]["@types/node"] == "^22.12.0"
     assert locked_node_types["version"].startswith("22.")
+    assert (frontend / "Dockerfile").read_text(encoding="utf-8").startswith(
+        "FROM node:24-bookworm-slim"
+    )
 
 
 @pytest.mark.parametrize("feature", ["auth", "evented"])

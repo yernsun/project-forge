@@ -25,18 +25,19 @@ Docker 拓扑、CI、双语 i18n，以及可选的认证与事件处理能力。
 | `evented` | 后端 | PostgreSQL outbox、Redis Streams 基础设施、稳定 event ID 幂等 |
 | `sample` | 所选 profile | 展示 API → Service → UoW → Repository 的 Items 纵切 |
 
-后端基线包含 Python 3.13、FastAPI、Pydantic v2、Psycopg 3、PostgreSQL 16、前向迁移和
-Repository SQL；前端基线包含 Node `>=22.12,<23`、Vue 3、Vite、TypeScript、PrimeVue、
+后端支持 Python `>=3.11`，Docker 默认使用 Python 3.13，并包含 FastAPI、Pydantic v2、
+Psycopg 3、PostgreSQL 16、前向迁移和 Repository SQL；前端支持 Node `>=22.12,<27`，
+Docker 和生成项目 CI 默认使用 Node 24，并包含 Vue 3、Vite、TypeScript、PrimeVue、
 Vue Query、仅保存客户端状态的 Pinia，以及 `zh-CN`/`en-US` 语言包。
 
 ## 环境要求
 
 | 工具 | 何时必需 | 版本 |
 |---|---|---|
-| Python | 始终 | `>=3.13` |
+| Python | 始终 | `>=3.11` |
 | uv | 始终 | 当前稳定版 |
 | Git | 受管演进 | 当前稳定版 |
-| Node.js 与 npm | frontend/fullstack | Node `>=22.12,<23` |
+| Node.js 与 npm | frontend/fullstack | Node `>=22.12,<27` |
 | Docker Engine 与 Compose v2 | 容器工作流 | 当前稳定版 |
 
 创建工程前检查当前机器：
@@ -54,14 +55,14 @@ project-forge doctor --require-docker
 推荐通过独立的 [uv tool](https://docs.astral.sh/uv/guides/tools/) 安装：
 
 ```bash
-uv tool install --python 3.13 git+https://github.com/yernsun/project-forge.git
+uv tool install --python 3.11 git+https://github.com/yernsun/project-forge.git
 project-forge --version
 ```
 
 私有 SSH 仓库：
 
 ```bash
-uv tool install --python 3.13 git+ssh://git@github.com/yernsun/project-forge.git
+uv tool install --python 3.11 git+ssh://git@github.com/yernsun/project-forge.git
 ```
 
 若 shell 找不到命令，执行 `uv tool update-shell`，通过 `uv tool dir --bin` 查看目录，
@@ -91,8 +92,13 @@ uv run project-forge --version
 也可以将当前检出安装为可编辑的独立工具：
 
 ```bash
-uv tool install --python 3.13 --editable .
+uv tool install --python 3.11 --editable .
 ```
+
+Project Forge CI 覆盖 Python 3.11～3.14，生成后端容器仍默认使用 Python 3.13。前端 CI
+覆盖 Node 22～26 的每个主版本；保留 Node 22 类型定义是为了将代码限制在最低支持版本
+已有的 API 表面。生产默认使用 Node 24。Node 23 和 25 已 EOL，只作为兼容目标；状态见
+[Node.js 发布表](https://nodejs.org/en/about/previous-releases)。
 
 ## 五分钟快速开始
 
@@ -200,8 +206,8 @@ JSON 格式固定，适合自动化：
       "name": "python",
       "status": "pass",
       "required": true,
-      "version": "Python 3.13.1",
-      "message": "meets >=3.13"
+      "version": "Python 3.11.16",
+      "message": "meets >=3.11"
     }
   ]
 }
@@ -327,12 +333,22 @@ docker compose up -d --build
 ### 已安装模板不是最新
 
 ```bash
-uv tool upgrade project-forge
+uv tool upgrade --reinstall project-forge
 project-forge --version
-project-forge update --check PATH
+git -C PATH status --short
+project-forge update PATH
+python3 PATH/harness/check.py
 ```
 
-`update --check` 不会主动查询远端。
+若重新安装记录的来源仍未刷新 Git 安装，可强制安装当前分支：
+
+```bash
+uv tool install --force --python 3.11 git+https://github.com/yernsun/project-forge.git
+```
+
+`update --check` 不会主动查询远端。本次兼容改造保持 `0.2.0`，旧 `0.2.0` 工程没有可供
+`--check` 报告的版本差；刷新工具后应直接执行 `project-forge update PATH`。Git 干净工作区、
+全量原子更新及冲突 `.rej` 规则仍然有效。
 
 ### 演进命令提示 Git 工作区不干净
 
@@ -346,7 +362,9 @@ Docker CLI、Compose v2 和 daemon 均可用。
 
 ### 前端拒绝当前 Node 版本
 
-使用 Node `>=22.12,<23`。Node 22.0–22.11 低于 Vite 下限，Node 23+ 超出模板锁定范围。
+使用 Node `>=22.12,<27`。Node 22.0–22.11 低于
+[Vite 运行时下限](https://vite.dev/guide/)，Node 27+ 超出已测试范围。Node 23 和 25
+虽然兼容，但已经 EOL，不应用于生产。
 
 ## 开发 Project Forge
 

@@ -427,11 +427,19 @@ class _QueryAnalyzer:
 def scan(path: Path) -> list[str]:
     text = path.read_text(encoding="utf-8")
     problems = [f"{path}: forbidden token {token!r}" for token in FORBIDDEN_TEXT if token in text]
+    try:
+        tree = ast.parse(text, filename=str(path), feature_version=(3, 11))
+    except SyntaxError as error:
+        location = f":{error.lineno}" if error.lineno is not None else ""
+        problems.append(
+            f"{path}{location}: Python source must be compatible with Python 3.11: "
+            f"{error.msg}"
+        )
+        return problems
     path_text = path.as_posix()
     if "/db/migrations/" in path_text:
         return problems
 
-    tree = ast.parse(text, filename=str(path))
     aliases = _SqlAliases.collect(tree)
     scopes = _ScopeIndex(tree)
     queries = _QueryAnalyzer(aliases, scopes)

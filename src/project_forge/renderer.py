@@ -25,6 +25,37 @@ class ProjectForgeError(RuntimeError):
     """A user-actionable generator failure."""
 
 
+def _baseline_members(bundle: tarfile.TarFile) -> list[tuple[tarfile.TarInfo, Path]]:
+    members: list[tuple[tarfile.TarInfo, Path]] = []
+    seen: set[Path] = set()
+    for member in bundle:
+        posix_path = PurePosixPath(member.name)
+        windows_path = PureWindowsPath(member.name)
+        if (
+            not posix_path.parts
+            or posix_path.is_absolute()
+            or windows_path.is_absolute()
+            or windows_path.drive
+            or ".." in posix_path.parts
+            or ".." in windows_path.parts
+        ):
+            raise ValueError(f"unsafe baseline member path: {member.name!r}")
+        if not member.isfile():
+            raise ValueError(f"baseline member is not a regular file: {member.name!r}")
+        relative = Path(*posix_path.parts)
+        if relative in seen:
+            raise ValueError(f"duplicate baseline member path: {member.name!r}")
+        if any(parent in seen for parent in relative.parents) or any(
+            relative in existing.parents for existing in seen
+        ):
+            raise ValueError(f"conflicting baseline member path: {member.name!r}")
+        seen.add(relative)
+        members.append((member, relative))
+    if not members:
+        raise ValueError("baseline archive is empty")
+    return members
+
+
 @dataclass(frozen=True)
 class _PlannedChange:
     relative: Path
@@ -216,24 +247,9 @@ def validate_baseline(baseline: Path) -> tuple[bool, str]:
         return False, f"missing {baseline}"
     try:
         with tarfile.open(baseline, mode="r:gz") as archive:
-            has_members = False
-            for member in archive:
-                has_members = True
-                posix_path = PurePosixPath(member.name)
-                windows_path = PureWindowsPath(member.name)
-                if (
-                    not posix_path.parts
-                    or posix_path.is_absolute()
-                    or windows_path.is_absolute()
-                    or windows_path.drive
-                    or ".." in posix_path.parts
-                    or ".." in windows_path.parts
-                ):
-                    return False, f"unsafe baseline member path: {member.name!r}"
-                if not member.isfile():
-                    return False, f"baseline member is not a regular file: {member.name!r}"
-            if not has_members:
-                return False, "baseline archive is empty"
+            _baseline_members(archive)
+    except ValueError as error:
+        return False, str(error)
     except (tarfile.TarError, OSError, EOFError) as error:
         return False, f"baseline archive is invalid: {error}"
     return True, "baseline archive is valid"
@@ -241,12 +257,27 @@ def validate_baseline(baseline: Path) -> tuple[bool, str]:
 
 def _extract_baseline(project_dir: Path, destination: Path) -> None:
     archive = project_dir / METADATA_DIR / BASELINE_FILE
-    valid, message = validate_baseline(archive)
-    if not valid:
-        raise ProjectForgeError(message)
+    invalid_destination = destination.is_symlink() or _is_junction(destination) or (
+        destination.exists()
+        and (not destination.is_dir() or any(destination.iterdir()))
+    )
+    if invalid_destination:
+        raise ProjectForgeError("baseline extraction destination must be an empty real directory")
+    destination.mkdir(parents=True, exist_ok=True)
     try:
         with tarfile.open(archive, "r:gz") as bundle:
-            bundle.extractall(destination, filter="data")
+            members = _baseline_members(bundle)
+            for member, relative in members:
+                target = destination / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                source = bundle.extractfile(member)
+                if source is None:  # pragma: no cover - guarded by member.isfile()
+                    raise tarfile.ExtractError(f"cannot read baseline member: {member.name!r}")
+                with source, target.open("xb") as output:
+                    shutil.copyfileobj(source, output)
+                os.chmod(target, member.mode & 0o777)
+    except ValueError as error:
+        raise ProjectForgeError(str(error)) from error
     except (tarfile.TarError, OSError, EOFError) as error:
         raise ProjectForgeError(f"baseline archive could not be extracted: {error}") from error
 
@@ -581,9 +612,21 @@ def _absolute_without_symlink_resolution(path: Path) -> Path:
 
 def _symlink_component(path: Path) -> Path | None:
     for candidate in reversed((path, *path.parents)):
-        if candidate.is_symlink() or candidate.is_junction():
+        if candidate.is_symlink() or _is_junction(candidate):
             return candidate
     return None
+
+
+def _is_junction(path: Path) -> bool:
+    junction_check = getattr(path, "is_junction", None)
+    if junction_check is not None:
+        return bool(junction_check())
+    try:
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+    except OSError:
+        return False
+    reparse_point = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return bool(reparse_point and attributes & reparse_point)
 
 
 def copy_skill(destination: Path, *, overwrite: bool = False) -> Path:

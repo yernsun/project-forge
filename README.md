@@ -26,18 +26,19 @@ Optional capabilities are additive:
 | `evented` | Backend | PostgreSQL outbox, Redis Streams foundations, stable event-ID deduplication |
 | `sample` | Selected profile | Tested Items slice showing API → Service → UoW → Repository boundaries |
 
-Generated backends use Python 3.13, FastAPI, Pydantic v2, Psycopg 3, PostgreSQL 16, forward
-migrations, and repository-owned SQL. Generated frontends use Node `>=22.12,<23`, Vue 3, Vite,
+Generated backends support Python `>=3.11` and use Python 3.13 in Docker by default, with FastAPI,
+Pydantic v2, Psycopg 3, PostgreSQL 16, forward migrations, and repository-owned SQL. Generated
+frontends support Node `>=22.12,<27` and use Node 24 for Docker and generated CI, with Vue 3, Vite,
 TypeScript, PrimeVue, Vue Query, Pinia for client-owned state, and `zh-CN`/`en-US` catalogs.
 
 ## Prerequisites
 
 | Tool | When required | Supported version |
 |---|---|---|
-| Python | Always | `>=3.13` |
+| Python | Always | `>=3.11` |
 | uv | Always | Current stable |
 | Git | Managed evolution | Current stable |
-| Node.js and npm | Frontend/full-stack | Node `>=22.12,<23` |
+| Node.js and npm | Frontend/full-stack | Node `>=22.12,<27` |
 | Docker Engine and Compose v2 | Compose workflows | Current stable |
 
 Check the machine before creating a project:
@@ -56,14 +57,14 @@ cleanliness.
 The recommended installation is an isolated [uv tool](https://docs.astral.sh/uv/guides/tools/):
 
 ```bash
-uv tool install --python 3.13 git+https://github.com/yernsun/project-forge.git
+uv tool install --python 3.11 git+https://github.com/yernsun/project-forge.git
 project-forge --version
 ```
 
 For a private SSH checkout:
 
 ```bash
-uv tool install --python 3.13 git+ssh://git@github.com/yernsun/project-forge.git
+uv tool install --python 3.11 git+ssh://git@github.com/yernsun/project-forge.git
 ```
 
 If the command is not on `PATH`, run `uv tool update-shell` and open a new terminal. Use
@@ -94,8 +95,14 @@ uv run project-forge --version
 Install the checkout as an editable isolated tool when desired:
 
 ```bash
-uv tool install --python 3.13 --editable .
+uv tool install --python 3.11 --editable .
 ```
+
+Python 3.11 through 3.14 are exercised in Project Forge CI. Python 3.13 remains the generated
+backend container default. Frontend CI exercises every Node major from 22 through 26; the checked-in
+Node 22 type definitions intentionally restrict code to the oldest supported API surface. Node 24
+is the production default. Node 23 and 25 are compatibility targets only because they are EOL; see
+the [Node.js release table](https://nodejs.org/en/about/previous-releases).
 
 ## Five-minute quick start
 
@@ -203,8 +210,8 @@ The JSON form is stable and suited to automation:
       "name": "python",
       "status": "pass",
       "required": true,
-      "version": "Python 3.13.1",
-      "message": "meets >=3.13"
+      "version": "Python 3.11.16",
+      "message": "meets >=3.11"
     }
   ]
 }
@@ -334,12 +341,24 @@ Run `uv tool update-shell`, inspect `uv tool dir --bin`, and open a new terminal
 ### The installed template appears stale
 
 ```bash
-uv tool upgrade project-forge
+uv tool upgrade --reinstall project-forge
 project-forge --version
-project-forge update --check PATH
+git -C PATH status --short
+project-forge update PATH
+python3 PATH/harness/check.py
 ```
 
-`update --check` intentionally does not query a remote repository.
+If reinstalling the recorded tool source does not refresh a Git installation, force-install the
+current branch explicitly:
+
+```bash
+uv tool install --force --python 3.11 git+https://github.com/yernsun/project-forge.git
+```
+
+`update --check` intentionally does not query a remote repository. This compatibility refresh keeps
+the version at `0.2.0`, so an older `0.2.0` project has no version delta for `--check` to report;
+after refreshing the tool, run `project-forge update PATH` directly. The normal clean-Git and
+all-or-nothing conflict safeguards still apply.
 
 ### Managed evolution reports a dirty worktree
 
@@ -353,8 +372,9 @@ of acceptance; the Docker CLI, Compose v2, and daemon must all be available.
 
 ### Frontend tools reject the Node version
 
-Use Node `>=22.12,<23`. Node 22.0–22.11 is below Vite's floor, and Node 23+ is outside the pinned
-runtime contract.
+Use Node `>=22.12,<27`. Node 22.0–22.11 is below
+[Vite's runtime floor](https://vite.dev/guide/), and Node 27+ is outside the tested contract. Node
+23 and 25 are accepted for compatibility but should not be used for production because they are EOL.
 
 ## Develop Project Forge
 

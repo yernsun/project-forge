@@ -349,15 +349,53 @@ def test_doctor_is_profile_aware_and_emits_json(
 
 
 @pytest.mark.parametrize(
+    ("python_version", "expected_exit_code", "expected_status"),
+    [
+        ("Python 3.10.99", 1, "fail"),
+        ("Python 3.11.0", 0, "pass"),
+        ("Python 3.14.7", 0, "pass"),
+    ],
+)
+def test_doctor_enforces_python_311_floor(
+    python_version: str,
+    expected_exit_code: int,
+    expected_status: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_version(command: str, *arguments: str) -> str | None:
+        del arguments
+        versions = {
+            Path(sys.executable).name: python_version,
+            "git": "git version 2.49.0",
+            "uv": "uv 0.8.0",
+            "node": "v24.11.1",
+            "npm": "11.6.2",
+        }
+        return versions.get(Path(command).name)
+
+    monkeypatch.setattr("project_forge.cli.tool_version", fake_version)
+    result = runner.invoke(app, ["doctor", "--json"])
+
+    assert result.exit_code == expected_exit_code
+    python_check = check_map(json.loads(result.stdout))["python"]
+    assert python_check["status"] == expected_status
+    assert ">=3.11" in python_check["message"]
+
+
+@pytest.mark.parametrize(
     ("node_version", "expected_exit_code", "expected_status"),
     [
         ("v22.11.99", 1, "fail"),
         ("v22.12.0", 0, "pass"),
         ("v22.99.0", 0, "pass"),
-        ("v23.0.0", 1, "fail"),
+        ("v23.11.1", 0, "pass"),
+        ("v24.19.0", 0, "pass"),
+        ("v25.9.0", 0, "pass"),
+        ("v26.7.0", 0, "pass"),
+        ("v27.0.0", 1, "fail"),
     ],
 )
-def test_doctor_enforces_node_22_12_runtime_range(
+def test_doctor_enforces_node_22_12_through_26_runtime_range(
     node_version: str,
     expected_exit_code: int,
     expected_status: str,
@@ -381,7 +419,7 @@ def test_doctor_enforces_node_22_12_runtime_range(
     assert result.exit_code == expected_exit_code
     node_check = check_map(json.loads(result.stdout))["node"]
     assert node_check["status"] == expected_status
-    assert ">=22.12,<23" in node_check["message"]
+    assert ">=22.12,<27" in node_check["message"]
 
 
 @pytest.mark.parametrize(
@@ -392,6 +430,10 @@ def test_doctor_enforces_node_22_12_runtime_range(
         ("absolute", "unsafe"),
         ("traversal", "unsafe"),
         ("directory", "not a regular file"),
+        ("symlink", "not a regular file"),
+        ("hardlink", "not a regular file"),
+        ("duplicate", "duplicate"),
+        ("conflict", "conflicting"),
     ],
 )
 def test_doctor_rejects_invalid_update_baseline(
@@ -416,8 +458,20 @@ def test_doctor_rejects_invalid_update_baseline(
         write_baseline(baseline, member_name="/outside.txt")
     elif case == "traversal":
         write_baseline(baseline, member_name="../outside.txt")
-    else:
+    elif case == "directory":
         write_baseline(baseline, member_name="directory", member_type=tarfile.DIRTYPE)
+    elif case == "symlink":
+        write_baseline(baseline, member_name="linked", member_type=tarfile.SYMTYPE)
+    elif case == "hardlink":
+        write_baseline(baseline, member_name="linked", member_type=tarfile.LNKTYPE)
+    else:
+        names = ("same.txt", "same.txt") if case == "duplicate" else ("parent", "parent/file")
+        with tarfile.open(baseline, mode="w:gz") as archive:
+            for name in names:
+                payload = b"fixture"
+                member = tarfile.TarInfo(name)
+                member.size = len(payload)
+                archive.addfile(member, io.BytesIO(payload))
 
     monkeypatch.setattr("project_forge.cli.git_worktree_status", lambda _: (True, True, None))
     result = runner.invoke(app, ["doctor", str(project), "--json"])
