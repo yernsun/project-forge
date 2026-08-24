@@ -69,6 +69,8 @@ STATES = tuple(valid_states())
 def test_every_valid_combination_renders(state: ProjectState, tmp_path: Path) -> None:
     destination = tmp_path / "project"
     render_fresh(state, destination)
+    assert (destination / "FAQ.md").is_file()
+    assert (destination / "FAQ.zh-CN.md").is_file()
     assert (destination / "backend").exists() is state.has_backend
     assert (destination / "frontend").exists() is state.has_frontend
     assert (destination / "backend/src/app/auth").exists() is (state.has_backend and state.auth)
@@ -207,6 +209,7 @@ def test_generated_readmes_are_runnable_and_profile_specific(
     for relative in ("README.md", "README.zh-CN.md"):
         content = (destination / relative).read_text(encoding="utf-8")
         assert content.count("```") % 2 == 0
+        assert "FAQ" in content
         assert "python harness/check.py" in content
         assert "project-forge update --check ." in content
         assert ("uv sync --frozen --all-groups" in content) is state.has_backend
@@ -217,6 +220,26 @@ def test_generated_readmes_are_runnable_and_profile_specific(
         assert ("FRONTEND_API_UPSTREAM" in content) is (
             profile is Profile.FRONTEND and sample
         )
+        assert "{%" not in content
+        assert "{{" not in content
+
+    english_faq = (destination / "FAQ.md").read_text(encoding="utf-8")
+    chinese_faq = (destination / "FAQ.zh-CN.md").read_text(encoding="utf-8")
+    assert "[简体中文](FAQ.zh-CN.md)" in english_faq
+    assert "[English](FAQ.md)" in chinese_faq
+    for content in (english_faq, chinese_faq):
+        assert content.count("```") % 2 == 0
+        for marker in (
+            "APP_ALLOWED_ORIGINS",
+            "APP_SESSION_COOKIE_SECURE",
+            "APP_AUTH_RATE_LIMIT_SECRET",
+            "FORWARDED_ALLOW_IPS",
+            "origin_not_allowed",
+            "request_validation_failed",
+            "workspaceName",
+            "HARNESS_STRICT",
+        ):
+            assert marker in content
         assert "{%" not in content
         assert "{{" not in content
 

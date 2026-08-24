@@ -9,6 +9,9 @@ Project Forge 是一个带版本管理的工程生成器，用于创建可治理
 正式入口是 `project-forge` CLI。生成工程自带架构 rules、Codex skills、验证 harness、
 Docker 拓扑、CI、双语 i18n，以及可选的认证与事件处理能力。
 
+生成工程的 Docker、局域网、Origin、Cookie、认证和环境排障见
+[常见问题](FAQ.zh-CN.md)（[English](FAQ.md)）。
+
 ## 生成内容
 
 | Profile | 前端 | 后端 | sample 默认值 | 适用场景 |
@@ -325,6 +328,8 @@ docker compose up -d --build
 | `3` | 更新冲突；只写入了 `.rej` |
 
 ## 常见问题
+
+生成工程运行与认证故障应先阅读双语[常见问题](FAQ.zh-CN.md)。
 
 ### 找不到 `project-forge`
 

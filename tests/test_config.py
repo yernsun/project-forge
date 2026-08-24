@@ -136,3 +136,28 @@ def test_project_name_rejects_control_and_line_separator_characters(
                     "project_slug": "unsafe-name",
                 }
             )
+
+
+def test_root_and_packaged_faqs_are_bilingual_and_synchronized() -> None:
+    template = ROOT / "src/project_forge/template"
+    pairs = (
+        (ROOT / "FAQ.md", template / "FAQ.md.jinja"),
+        (ROOT / "FAQ.zh-CN.md", template / "FAQ.zh-CN.md.jinja"),
+    )
+
+    for root_path, template_path in pairs:
+        root_content = root_path.read_text(encoding="utf-8")
+        template_content = template_path.read_text(encoding="utf-8")
+        assert root_content == template_content
+        assert root_content.count("```") % 2 == 0
+        for marker in (
+            "origin_not_allowed",
+            "request_validation_failed",
+            "APP_ALLOWED_ORIGINS",
+            "APP_SESSION_COOKIE_SECURE",
+            "FORWARDED_ALLOW_IPS",
+        ):
+            assert marker in root_content
+
+    assert "[简体中文](FAQ.zh-CN.md)" in pairs[0][0].read_text(encoding="utf-8")
+    assert "[English](FAQ.md)" in pairs[1][0].read_text(encoding="utf-8")

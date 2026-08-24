@@ -10,6 +10,9 @@ The public interface is the `project-forge` CLI. Generated repositories include 
 Codex skills, a validation harness, Docker topology, CI, bilingual i18n, and optional authentication
 or event processing.
 
+For generated-project Docker, LAN, Origin, cookie, authentication, and environment troubleshooting,
+read the [FAQ](FAQ.md) ([简体中文](FAQ.zh-CN.md)).
+
 ## What gets generated
 
 | Profile | Frontend | Backend | Default sample | Typical use |
@@ -335,6 +338,9 @@ production use.
 | `3` | Update conflict; only `.rej` files were written |
 
 ## Troubleshooting
+
+For generated-project runtime and authentication failures, start with the bilingual
+[FAQ](FAQ.md).
 
 ### `project-forge: command not found`
 

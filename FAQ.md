@@ -1,0 +1,318 @@
+# Project Forge FAQ
+
+[简体中文](FAQ.zh-CN.md) | English
+
+This guide covers operational problems that commonly appear after Project Forge initializes a
+repository. Run commands from the generated repository root unless a command says otherwise. Never
+paste passwords, session cookies, CSRF tokens, or `APP_AUTH_RATE_LIMIT_SECRET` into issue reports.
+
+## Docker and environment selection
+
+### Why does FastAPI say "production mode" when `APP_ENV=development`?
+
+These settings control different things:
+
+- `fastapi dev` or `fastapi run` selects the FastAPI server mode.
+- `APP_ENV=development|test|production` selects application security defaults and validation.
+- `docker compose -f docker-compose.dev.yml ...` selects the development topology.
+- `docker compose ...` without `-f` selects the production topology in `docker-compose.yml`.
+
+Check which stack and command are actually running:
+
+```bash
+docker compose ls
+docker compose -f docker-compose.dev.yml ps
+docker compose -f docker-compose.dev.yml logs --tail=100 api frontend
+```
+
+The generated development API runs `fastapi dev`; the production image defaults to `fastapi run`.
+Changing only `APP_ENV` does not change the server command or Compose topology.
+
+### Which `.env` file controls each workflow?
+
+| Workflow | Configuration source |
+|---|---|
+| Production Compose | Root `.env`, expanded by `docker-compose.yml` |
+| Development Compose | Values declared in `docker-compose.dev.yml` |
+| Backend run directly on the host | `backend/.env` |
+| Frontend run directly on the host | `frontend/.env` |
+
+The root `.env` does not override a literal value in `docker-compose.dev.yml`. Inspect the resolved
+configuration instead of assuming a file was loaded:
+
+```bash
+docker compose -f docker-compose.dev.yml config
+docker compose -f docker-compose.dev.yml exec -T api printenv \
+  APP_ENV APP_ALLOWED_ORIGINS APP_SESSION_COOKIE_SECURE APP_SIGNUP_ENABLED
+```
+
+Keep one `KEY=value` assignment per line. An `.env` file must contain a plain URL, not Markdown:
+
+```dotenv
+# Correct
+APP_ALLOWED_ORIGINS=https://app.example.com
+
+# Incorrect
+APP_ALLOWED_ORIGINS=[https://app.example.com](https://app.example.com)
+```
+
+Protect files containing credentials:
+
+```bash
+chmod 600 .env backend/.env
+```
+
+### Why did a configuration change not affect the running container?
+
+Application settings are read at process startup and cached. Validate the resolved Compose model,
+then recreate the affected containers:
+
+```bash
+docker compose -f docker-compose.dev.yml config --quiet
+docker compose -f docker-compose.dev.yml \
+  up -d --build --force-recreate migrate api frontend
+```
+
+`docker compose restart` does not recreate a container with changed environment variables.
+
+## LAN access and request origins
+
+### How do I expose the development frontend to another device on my LAN?
+
+The browser origin is the externally visible scheme, host, and host port. If Vite still listens on
+container port `5173` but the host publishes port `8173`, adjust these existing entries while
+retaining the other generated environment values:
+
+```yaml
+services:
+  migrate:
+    environment: &backend-env
+      APP_ALLOWED_ORIGINS: >-
+        http://localhost:8173,http://127.0.0.1:8173,http://192.168.0.169:8173
+      APP_SESSION_COOKIE_SECURE: "false"
+  api:
+    environment: *backend-env
+  frontend:
+    ports:
+      - "8173:5173"
+```
+
+Then browse to `http://192.168.0.169:8173`. Replace the address with the server's stable LAN address.
+Do not use `0.0.0.0` as a browser URL or allowed origin; it is only a listen address.
+
+### What causes `origin_not_allowed`?
+
+Authentication signup/login and every authenticated unsafe request require an allowed `Origin`,
+with an allowed-origin `Referer` fallback. The match is exact after removing a trailing slash:
+
+- `http` and `https` are different origins.
+- `localhost`, `127.0.0.1`, and a LAN IP are different origins.
+- Ports `5173`, `8173`, and `8700` are different origins.
+- An origin never contains `/api/v1`, another path, credentials, a query, or a fragment.
+
+`APP_ALLOWED_ORIGINS` must contain the browser page origin, not any of these internal addresses:
+
+- `http://0.0.0.0:8000`
+- `http://api:8000`
+- `VITE_API_PROXY_TARGET`
+
+Compare the browser's Network panel `Origin` request header with the value inside the API container:
+
+```bash
+docker compose -f docker-compose.dev.yml exec -T api \
+  printenv APP_ALLOWED_ORIGINS
+```
+
+For direct `curl` calls, send the header explicitly:
+
+```bash
+curl -H 'Origin: http://192.168.0.169:8173' \
+  http://192.168.0.169:8173/api/v1/auth/session
+```
+
+### Can authentication support both HTTP and HTTPS?
+
+Development may allow multiple comma-separated HTTP and HTTPS origins with
+`APP_SESSION_COOKIE_SECURE=false`. Production intentionally allows HTTPS origins only and requires
+Secure cookies. Do not weaken that production check.
+
+Internal container traffic can remain HTTP. A normal production path is:
+
+```text
+browser https://app.example.com
+  -> external TLS terminator
+  -> http://127.0.0.1:8080
+  -> http://api:8000
+```
+
+`APP_ALLOWED_ORIGINS` is `https://app.example.com` in that example. Keep the production gateway on
+`APP_BIND_HOST=127.0.0.1` unless a controlled network explicitly requires another binding.
+
+## Authentication requests and cookies
+
+### What causes `request_validation_failed` on signup?
+
+The request reached FastAPI but failed the strict signup DTO before the Service ran. Authentication
+responses intentionally hide field-level validation details so passwords and submitted credentials
+cannot leak into responses.
+
+The JSON contract is:
+
+```json
+{
+  "email": "developer@example.com",
+  "password": "correct-horse-battery",
+  "workspaceName": "Personal"
+}
+```
+
+Requirements:
+
+- Send `Content-Type: application/json`, not form data.
+- `email` must pass `EmailStr`; avoid local/IP-only addresses and special-use `.test` examples.
+- Signup passwords contain 12–200 characters and are not automatically trimmed.
+- `workspaceName` contains 1–120 characters and cannot be whitespace-only.
+- Unknown fields such as `username`, `workspace`, or `confirmPassword` are rejected.
+- External fields use camel case; use `workspaceName`.
+
+Use the browser Network panel to inspect Request Payload without sharing the actual password. A
+known-good LAN test is:
+
+```bash
+curl -i -c .cookies.txt \
+  -H 'Origin: http://192.168.0.169:8173' \
+  -H 'Content-Type: application/json' \
+  --data '{"email":"developer@example.com","password":"correct-horse-battery","workspaceName":"Personal"}' \
+  http://192.168.0.169:8173/api/v1/auth/signup
+```
+
+Expected success is `201 Created`. A duplicate email returns `409` instead of `422`.
+
+### Why does signup return `signup_disabled`?
+
+Production signup defaults to disabled. Enable it only for the intended enrollment window:
+
+```dotenv
+APP_SIGNUP_ENABLED=true
+```
+
+Recreate the API container after changing it. Disable public signup again after provisioning users
+when open registration is not a product requirement.
+
+### Why does signup return `201`, but session restore returns `401`?
+
+Check the cookie boundary:
+
+- HTTP development requires `APP_SESSION_COOKIE_SECURE=false`.
+- HTTPS production requires Secure cookies and uses `__Host-<slug>-session/csrf` names.
+- Always use the same browser host. A cookie created on `localhost` does not belong to a LAN IP.
+- `SameSite=Strict` intentionally rejects cross-site cookie flows.
+- Clear stale cookies after changing host, port, environment, or project slug.
+
+The generated frontend uses an empty `VITE_API_BASE_URL` so API calls remain same-origin. Prefer that
+arrangement instead of pointing the browser directly at container port `8000`.
+
+### Why does an authenticated POST/PUT/PATCH/DELETE return `csrf_invalid` or `403`?
+
+Unsafe authenticated requests require all of the following:
+
+- a valid session cookie;
+- an allowed Origin (or Referer fallback);
+- the readable CSRF cookie;
+- the same token in `X-CSRF-Token`;
+- the session-bound CSRF digest stored in PostgreSQL.
+
+The generated `openapi-fetch` middleware handles this automatically. Custom clients must copy the
+CSRF cookie value into the header and keep the cookie jar.
+
+## Proxies, rate limits, and secrets
+
+### What belongs in `FORWARDED_ALLOW_IPS`?
+
+Only the IPs/CIDRs of the immediate gateway and every controlled proxy hop. The API uses this trust
+boundary to recover the real client address for PostgreSQL rate limits.
+
+- `0.0.0.0/32` trusts only the single address `0.0.0.0`; it is not a wildcard.
+- `0.0.0.0/0`, `::/0`, and `*` trust everyone and are rejected in production.
+- Do not blindly trust every Docker or corporate network.
+- A development Compose proxy may use a controlled project-network CIDR; production should use an
+  explicitly managed network/proxy chain.
+
+Inspect the immediate peer and project subnet before configuring them:
+
+```bash
+docker network inspect PROJECT_default
+docker inspect PROJECT-gateway-1
+```
+
+If the proxy is not trusted, authentication still works, but many users may share the proxy's client
+key and exhaust one rate-limit bucket together.
+
+### How should `APP_AUTH_RATE_LIMIT_SECRET` be created?
+
+Generate a stable, environment-specific random value:
+
+```bash
+openssl rand -hex 32
+```
+
+Store it in the secret manager or untracked `.env`, never in Git. Production rejects the generated
+development default and values shorter than 32 bytes. Keep the value stable across replicas and
+restarts so all instances derive the same HMAC bucket keys.
+
+### Why am I receiving `429 Too Many Requests` during testing?
+
+Login and signup limits are shared in PostgreSQL. Read the `Retry-After` header and wait for the
+window to expire. Wrong login credentials consume attempts; request DTO and Origin rejection happen
+before credential verification. Inspect or remove expired buckets with:
+
+```bash
+cd backend
+uv run app auth purge-expired --dry-run
+uv run app auth purge-expired
+```
+
+Do not raise production limits merely to hide a broken proxy/client-address configuration.
+
+## Diagnosis and project maintenance
+
+### What should I collect before reporting a Compose/authentication problem?
+
+Use redacted output; never print secrets or complete cookies:
+
+```bash
+docker compose ls
+docker compose -f docker-compose.dev.yml ps
+docker compose -f docker-compose.dev.yml config --quiet
+docker compose -f docker-compose.dev.yml exec -T api printenv \
+  APP_ENV APP_ALLOWED_ORIGINS APP_SESSION_COOKIE_SECURE \
+  APP_SIGNUP_ENABLED FORWARDED_ALLOW_IPS
+docker compose -f docker-compose.dev.yml logs --tail=100 api frontend
+curl -i http://localhost:5173/health/ready
+python harness/check.py
+```
+
+Use `HARNESS_STRICT=1` when missing `uv`, npm, or Docker must fail rather than skip:
+
+```bash
+HARNESS_STRICT=1 HARNESS_DOCKER=1 python harness/check.py
+```
+
+### Why should I commit the generated baseline before local customization?
+
+Project Forge update/add/enable commands require a clean Git worktree. Commit the generated baseline
+before changing ports or Compose files so Git provides a recovery point and later three-way updates
+can distinguish generated changes from local ones. Never commit `.env`, cookie jars, or secrets.
+
+## Quick error lookup
+
+| Symptom/code | First checks |
+|---|---|
+| FastAPI reports production mode | Compose file and `fastapi dev` versus `fastapi run` command |
+| `origin_not_allowed` | Exact browser scheme/host/port versus API container allowed origins |
+| `request_validation_failed` | JSON Content-Type, valid email, password length, `workspaceName`, extra fields |
+| `signup_disabled` | `APP_SIGNUP_ENABLED` and whether production registration should be open |
+| Signup `201`, session `401` | Secure flag, hostname consistency, stale cookies, same-origin API base URL |
+| `csrf_invalid` / authenticated `403` | Session cookie, Origin, CSRF cookie/header pair |
+| `429` | `Retry-After`, trusted proxy chain, shared PostgreSQL limiter buckets |
+| Settings change ignored | Resolved Compose config and container recreation |
