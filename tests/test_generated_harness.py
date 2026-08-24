@@ -18,6 +18,13 @@ REPRESENTATIVE_STATES = (
     ProjectState.create("Frontend Sample", profile=Profile.FRONTEND, sample=True),
     ProjectState.create("Backend Minimal", profile=Profile.BACKEND, sample=False),
     ProjectState.create(
+        "Backend Maximal",
+        profile=Profile.BACKEND,
+        auth=True,
+        evented=True,
+        sample=True,
+    ),
+    ProjectState.create(
         "Fullstack Auth Sample",
         profile=Profile.FULLSTACK,
         auth=True,
@@ -75,12 +82,12 @@ def test_static_generated_harnesses_pass(state: ProjectState, tmp_path: Path) ->
     node_steps = [
         step
         for step in validate["steps"]
-        if step.get("uses") == "actions/setup-node@v4"
+        if step.get("uses") == "actions/setup-node@v7"
     ]
     python_steps = [
         step
         for step in validate["steps"]
-        if step.get("uses") == "astral-sh/setup-uv@v6"
+        if step.get("uses") == "astral-sh/setup-uv@v10"
     ]
     if state.has_backend:
         assert python_steps and all(
@@ -106,6 +113,10 @@ def test_static_generated_harnesses_pass(state: ProjectState, tmp_path: Path) ->
         assert "npm run e2e" in commands
         assert "docker compose -f docker-compose.dev.yml logs" in commands
         assert "docker compose -f docker-compose.dev.yml down --volumes" in commands
+        step_names = [step.get("name") for step in e2e["steps"]]
+        assert step_names.index("Install browser test dependencies") < step_names.index(
+            "Start development Compose stack"
+        )
         cleanup = [step for step in e2e["steps"] if step.get("if") == "always()"]
         assert {step["name"] for step in cleanup} == {
             "Show Compose logs",
@@ -150,7 +161,7 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
 
     contracts = workflow["jobs"]["openapi-contracts"]
     contract_node_steps = [
-        step for step in contracts["steps"] if step.get("uses") == "actions/setup-node@v4"
+        step for step in contracts["steps"] if step.get("uses") == "actions/setup-node@v7"
     ]
     assert contract_node_steps[0]["with"]["node-version"] == "24"
     contract_commands = "\n".join(str(step.get("run", "")) for step in contracts["steps"])
@@ -168,7 +179,7 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
     generated_node_steps = [
         step
         for step in generated["steps"]
-        if step.get("uses") == "actions/setup-node@v4"
+        if step.get("uses") == "actions/setup-node@v7"
     ]
     assert generated_node_steps[0]["with"]["node-version"] == "24"
     steps = "\n".join(str(step.get("run", "")) for step in generated["steps"])
@@ -176,13 +187,17 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
     assert "uv run --frozen --no-sync app migrate up" in steps
     e2e = workflow["jobs"]["fullstack-auth-compose-e2e"]
     e2e_node_steps = [
-        step for step in e2e["steps"] if step.get("uses") == "actions/setup-node@v4"
+        step for step in e2e["steps"] if step.get("uses") == "actions/setup-node@v7"
     ]
     assert e2e_node_steps[0]["with"]["node-version"] == "24"
     e2e_steps = "\n".join(str(step.get("run", "")) for step in e2e["steps"])
     assert "--profile fullstack --auth --sample --no-git" in e2e_steps
     assert "docker compose -f docker-compose.dev.yml up -d --build" in e2e_steps
     assert "npm run e2e" in e2e_steps
+    e2e_step_names = [step.get("name") for step in e2e["steps"]]
+    assert e2e_step_names.index("Install browser test dependencies") < e2e_step_names.index(
+        "Start development Compose stack"
+    )
 
     backend_compatibility = workflow["jobs"]["backend-runtime-compatibility"]
     assert backend_compatibility["strategy"]["matrix"]["python-version"] == [
@@ -198,13 +213,7 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
     assert "--extra auth --extra evented" in backend_commands
 
     frontend_compatibility = workflow["jobs"]["frontend-runtime-compatibility"]
-    assert frontend_compatibility["strategy"]["matrix"]["node-version"] == [
-        "22",
-        "23",
-        "24",
-        "25",
-        "26",
-    ]
+    assert frontend_compatibility["strategy"]["matrix"]["node-version"] == ["22", "24"]
     assert frontend_compatibility["env"]["npm_config_engine_strict"] == "true"
 
     package = workflow["jobs"]["package-command"]

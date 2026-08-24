@@ -22,13 +22,13 @@
 
 - 完整工作流需要 Git、Docker Engine 和 Compose v2。
 {% if profile != 'frontend' %}- 后端本地开发需要 Python `>=3.11` 和 uv。
-{% endif %}{% if profile != 'backend' %}- 前端本地开发需要 Node.js `>=22.12,<27` 和 npm。
+{% endif %}{% if profile != 'backend' %}- 前端本地开发需要 Node.js LTS `>=22.12 <23 || >=24 <25` 和 npm。
 {% endif %}
 
 后端容器默认使用 Python 3.13，前端容器和生成项目 CI 默认使用 Node 24。Project Forge
-覆盖 Python 3.11～3.14 和 Node 22～26 的每个主版本。保留 Node 22 类型定义是为了将应用
-代码限制在最低支持版本已有的 API 表面；Node 23 和 25 只作为兼容目标，已 EOL，不应用于
-生产。
+覆盖 Python 3.11～3.14，以及当前受支持的 Node 22 与 Node 24 LTS。保留 Node 22 类型定义
+是为了将应用代码限制在最低支持版本已有的 API 表面。奇数版本以及尚未进入 LTS 的新偶数
+版本不属于兼容承诺。
 
 提交生成基线后，执行与 profile 匹配的环境检查：
 

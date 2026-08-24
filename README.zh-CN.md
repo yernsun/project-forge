@@ -26,8 +26,8 @@ Docker 拓扑、CI、双语 i18n，以及可选的认证与事件处理能力。
 | `sample` | 所选 profile | 展示 API → Service → UoW → Repository 的 Items 纵切 |
 
 后端支持 Python `>=3.11`，Docker 默认使用 Python 3.13，并包含 FastAPI、Pydantic v2、
-Psycopg 3、PostgreSQL 16、前向迁移和 Repository SQL；前端支持 Node `>=22.12,<27`，
-Docker 和生成项目 CI 默认使用 Node 24，并包含 Vue 3、Vite、TypeScript、PrimeVue、
+Psycopg 3、PostgreSQL 16、前向迁移和 Repository SQL；前端支持 Node LTS
+`>=22.12 <23 || >=24 <25`，Docker 和生成项目 CI 默认使用 Node 24，并包含 Vue 3、Vite、TypeScript、PrimeVue、
 Vue Query、仅保存客户端状态的 Pinia，以及 `zh-CN`/`en-US` 语言包。
 
 ## 环境要求
@@ -37,7 +37,7 @@ Vue Query、仅保存客户端状态的 Pinia，以及 `zh-CN`/`en-US` 语言包
 | Python | 始终 | `>=3.11` |
 | uv | 始终 | 当前稳定版 |
 | Git | 受管演进 | 当前稳定版 |
-| Node.js 与 npm | frontend/fullstack | Node `>=22.12,<27` |
+| Node.js 与 npm | frontend/fullstack | Node LTS `>=22.12 <23 || >=24 <25` |
 | Docker Engine 与 Compose v2 | 容器工作流 | 当前稳定版 |
 
 创建工程前检查当前机器：
@@ -96,9 +96,9 @@ uv tool install --python 3.11 --editable .
 ```
 
 Project Forge CI 覆盖 Python 3.11～3.14，生成后端容器仍默认使用 Python 3.13。前端 CI
-覆盖 Node 22～26 的每个主版本；保留 Node 22 类型定义是为了将代码限制在最低支持版本
-已有的 API 表面。生产默认使用 Node 24。Node 23 和 25 已 EOL，只作为兼容目标；状态见
-[Node.js 发布表](https://nodejs.org/en/about/previous-releases)。
+只覆盖当前受支持的 Node 22 与 Node 24 LTS；保留 Node 22 类型定义是为了将代码限制在最低
+支持版本已有的 API 表面。生产默认使用 Node 24。奇数版本以及尚未进入 LTS 的新偶数版本
+不属于兼容承诺；状态见 [Node.js 发布表](https://nodejs.org/en/about/previous-releases)。
 
 ## 五分钟快速开始
 
@@ -362,9 +362,9 @@ Docker CLI、Compose v2 和 daemon 均可用。
 
 ### 前端拒绝当前 Node 版本
 
-使用 Node `>=22.12,<27`。Node 22.0–22.11 低于
-[Vite 运行时下限](https://vite.dev/guide/)，Node 27+ 超出已测试范围。Node 23 和 25
-虽然兼容，但已经 EOL，不应用于生产。
+使用 Node LTS `>=22.12 <23 || >=24 <25`。Node 22.0–22.11 低于
+[Vite 运行时下限](https://vite.dev/guide/)。Node 23 和 25 已 EOL；Node 26 在未来的
+Project Forge 版本明确采纳其 LTS 后才会进入支持范围。
 
 ## 开发 Project Forge
 

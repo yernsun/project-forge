@@ -9,9 +9,9 @@ from app.db.migration_engine import Migration, MigrationError, MigrationRunner, 
 {% if sample %}from app.db.migrations.auth_items import AUTH_ITEMS
 {% endif %}from app.db.migrations.auth_security import AUTH_SECURITY
 {% endif %}{% if auth or sample or evented %}from app.db.migrations.core import CORE
-{% endif %}{% if sample %}from app.db.migrations.items import ITEMS
 {% endif %}{% if evented %}from app.db.migrations.event_idempotency import EVENT_IDEMPOTENCY
 from app.db.migrations.events import EVENTS
+{% endif %}{% if sample %}from app.db.migrations.items import ITEMS
 {% endif %}from app.db.types import DbConnection
 from app.repositories.health import HealthRepository
 

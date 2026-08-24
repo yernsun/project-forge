@@ -89,14 +89,13 @@ def _at_least(major: int, minor: int = 0) -> Callable[[str], bool]:
     return compatible
 
 
-def _at_least_below(
-    major: int, minor: int, upper_major: int
-) -> Callable[[str], bool]:
-    def compatible(output: str) -> bool:
-        parts = _version_parts(output)
-        return parts is not None and (major, minor, 0) <= parts < (upper_major, 0, 0)
+def _supported_node_lts(output: str) -> bool:
+    """Accept only the Node LTS majors covered by the generated frontend."""
 
-    return compatible
+    parts = _version_parts(output)
+    if parts is None:
+        return False
+    return (22, 12, 0) <= parts < (23, 0, 0) or (24, 0, 0) <= parts < (25, 0, 0)
 
 
 def _tool_check(
@@ -183,8 +182,8 @@ def _doctor_checks(profile: Profile, *, require_docker: bool) -> list[DoctorChec
             "node",
             "node",
             required=has_frontend,
-            requirement=">=22.12,<27",
-            compatible=_at_least_below(22, 12, 27),
+            requirement=">=22.12,<23 || >=24,<25 (LTS only)",
+            compatible=_supported_node_lts,
         ),
         _tool_check("npm", "npm", required=has_frontend),
     ]

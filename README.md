@@ -28,8 +28,9 @@ Optional capabilities are additive:
 
 Generated backends support Python `>=3.11` and use Python 3.13 in Docker by default, with FastAPI,
 Pydantic v2, Psycopg 3, PostgreSQL 16, forward migrations, and repository-owned SQL. Generated
-frontends support Node `>=22.12,<27` and use Node 24 for Docker and generated CI, with Vue 3, Vite,
-TypeScript, PrimeVue, Vue Query, Pinia for client-owned state, and `zh-CN`/`en-US` catalogs.
+frontends support Node LTS `>=22.12 <23 || >=24 <25` and use Node 24 for Docker and generated CI,
+with Vue 3, Vite, TypeScript, PrimeVue, Vue Query, Pinia for client-owned state, and
+`zh-CN`/`en-US` catalogs.
 
 ## Prerequisites
 
@@ -38,7 +39,7 @@ TypeScript, PrimeVue, Vue Query, Pinia for client-owned state, and `zh-CN`/`en-U
 | Python | Always | `>=3.11` |
 | uv | Always | Current stable |
 | Git | Managed evolution | Current stable |
-| Node.js and npm | Frontend/full-stack | Node `>=22.12,<27` |
+| Node.js and npm | Frontend/full-stack | Node LTS `>=22.12 <23 || >=24 <25` |
 | Docker Engine and Compose v2 | Compose workflows | Current stable |
 
 Check the machine before creating a project:
@@ -99,10 +100,11 @@ uv tool install --python 3.11 --editable .
 ```
 
 Python 3.11 through 3.14 are exercised in Project Forge CI. Python 3.13 remains the generated
-backend container default. Frontend CI exercises every Node major from 22 through 26; the checked-in
-Node 22 type definitions intentionally restrict code to the oldest supported API surface. Node 24
-is the production default. Node 23 and 25 are compatibility targets only because they are EOL; see
-the [Node.js release table](https://nodejs.org/en/about/previous-releases).
+backend container default. Frontend CI exercises the currently supported Node 22 and Node 24 LTS
+lines only; the checked-in Node 22 type definitions intentionally restrict code to the oldest
+supported API surface. Node 24 is the production default. Odd-numbered releases and a new even
+release before it reaches LTS are outside the support contract; see the
+[Node.js release table](https://nodejs.org/en/about/previous-releases).
 
 ## Five-minute quick start
 
@@ -372,9 +374,9 @@ of acceptance; the Docker CLI, Compose v2, and daemon must all be available.
 
 ### Frontend tools reject the Node version
 
-Use Node `>=22.12,<27`. Node 22.0–22.11 is below
-[Vite's runtime floor](https://vite.dev/guide/), and Node 27+ is outside the tested contract. Node
-23 and 25 are accepted for compatibility but should not be used for production because they are EOL.
+Use Node LTS `>=22.12 <23 || >=24 <25`. Node 22.0–22.11 is below
+[Vite's runtime floor](https://vite.dev/guide/). Node 23 and 25 are EOL, while Node 26 remains outside
+the support contract until a future Project Forge release explicitly adopts it after it reaches LTS.
 
 ## Develop Project Forge
 

@@ -80,7 +80,7 @@ def test_frontend_runtime_range_uses_node_22_type_floor_and_node_24_image() -> N
     locked_root = package_lock["packages"][""]
     locked_node_types = package_lock["packages"]["node_modules/@types/node"]
 
-    assert package["engines"]["node"] == ">=22.12 <27"
+    assert package["engines"]["node"] == ">=22.12 <23 || >=24 <25"
     assert locked_root["engines"] == package["engines"]
     assert package["devDependencies"]["@types/node"] == "^22.12.0"
     assert locked_root["devDependencies"]["@types/node"] == "^22.12.0"

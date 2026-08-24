@@ -388,14 +388,14 @@ def test_doctor_enforces_python_311_floor(
         ("v22.11.99", 1, "fail"),
         ("v22.12.0", 0, "pass"),
         ("v22.99.0", 0, "pass"),
-        ("v23.11.1", 0, "pass"),
+        ("v23.11.1", 1, "fail"),
         ("v24.19.0", 0, "pass"),
-        ("v25.9.0", 0, "pass"),
-        ("v26.7.0", 0, "pass"),
+        ("v25.9.0", 1, "fail"),
+        ("v26.7.0", 1, "fail"),
         ("v27.0.0", 1, "fail"),
     ],
 )
-def test_doctor_enforces_node_22_12_through_26_runtime_range(
+def test_doctor_enforces_supported_node_lts_runtime_ranges(
     node_version: str,
     expected_exit_code: int,
     expected_status: str,
@@ -419,7 +419,7 @@ def test_doctor_enforces_node_22_12_through_26_runtime_range(
     assert result.exit_code == expected_exit_code
     node_check = check_map(json.loads(result.stdout))["node"]
     assert node_check["status"] == expected_status
-    assert ">=22.12,<27" in node_check["message"]
+    assert ">=22.12,<23 || >=24,<25 (LTS only)" in node_check["message"]
 
 
 @pytest.mark.parametrize(

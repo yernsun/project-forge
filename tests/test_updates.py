@@ -211,10 +211,10 @@ type DbPool = AsyncConnectionPool[DbConnection]
         .replace(b'requires-python = ">=3.11"', b'requires-python = ">=3.13"', 1),
         frontend_package_path: (project / frontend_package_path)
         .read_bytes()
-        .replace(b'">=22.12 <27"', b'">=22.12 <23"'),
+        .replace(b'">=22.12 <23 || >=24 <25"', b'">=22.12 <23"'),
         frontend_lock_path: (project / frontend_lock_path)
         .read_bytes()
-        .replace(b'">=22.12 <27"', b'">=22.12 <23"'),
+        .replace(b'">=22.12 <23 || >=24 <25"', b'">=22.12 <23"'),
         frontend_dockerfile_path: (project / frontend_dockerfile_path)
         .read_bytes()
         .replace(b"FROM node:24-bookworm-slim", b"FROM node:22-bookworm-slim"),
@@ -235,7 +235,9 @@ type DbPool = AsyncConnectionPool[DbConnection]
     assert result.exit_code == 0, result.output
     assert "TypeAlias" in (project / types_path).read_text(encoding="utf-8")
     assert ">=3.11" in (project / backend_project_path).read_text(encoding="utf-8")
-    assert '"node": ">=22.12 <27"' in (project / frontend_package_path).read_text(
+    assert '"node": ">=22.12 <23 || >=24 <25"' in (
+        project / frontend_package_path
+    ).read_text(
         encoding="utf-8"
     )
     assert (project / frontend_dockerfile_path).read_text(encoding="utf-8").startswith(

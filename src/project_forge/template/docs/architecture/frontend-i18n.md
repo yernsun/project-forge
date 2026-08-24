@@ -34,11 +34,12 @@ origin handling, errors, and `401` behavior cannot diverge between features.
 
 ## Development and deployment
 
-The frontend toolchain supports Node.js `>=22.12,<27`; generated CI and the frontend Docker builder
-use Node 24. Project Forge validates every Node major from 22 through 26. The lower bound matches
-Vite's runtime requirement, while the checked-in Node 22 type definitions intentionally prevent
-application code from relying on APIs missing from the oldest supported runtime. Node 23 and 25 are
-compatibility targets only and should not be used for production because they are EOL.
+The frontend toolchain supports the Node.js LTS ranges `>=22.12 <23 || >=24 <25`; generated CI and
+the frontend Docker builder use Node 24. Project Forge validates the supported Node 22 and Node 24
+LTS lines. The lower bound matches Vite's runtime requirement, while the checked-in Node 22 type
+definitions intentionally prevent application code from relying on APIs missing from the oldest
+supported runtime. Odd-numbered releases and new even-numbered releases that have not reached LTS
+are outside the support contract.
 
 For direct local development, copy `frontend/.env.example` to `frontend/.env`. Keep
 `VITE_API_BASE_URL` empty to use the same-origin Vite proxy and set `VITE_API_PROXY_TARGET` to the

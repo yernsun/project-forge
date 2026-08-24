@@ -45,7 +45,12 @@ from app.auth.service import AuthService, RateLimitSpec, fixed_window
 from app.cli import app as cli_app
 from app.domain.base import utc_now
 from app.main import app as fastapi_app
-from app.settings import COOKIE_PREFIX, Settings, get_settings
+from app.settings import (
+    COOKIE_PREFIX,
+    DEVELOPMENT_RATE_LIMIT_SECRET,
+    Settings,
+    get_settings,
+)
 from app.uow.factory import UnitOfWorkFactory
 
 
@@ -132,6 +137,8 @@ def test_production_auth_settings_fail_closed() -> None:
             database_url="postgresql://safe:secret@db/app",
             allowed_origins_csv="https://app.example.com",
             session_cookie_secure=True,
+            auth_rate_limit_secret=DEVELOPMENT_RATE_LIMIT_SECRET,
+            forwarded_allow_ips_csv="10.0.0.10",
         )
 
 
