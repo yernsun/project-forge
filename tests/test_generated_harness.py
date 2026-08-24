@@ -12,6 +12,11 @@ from project_forge.config import Profile, ProjectState
 from project_forge.renderer import render_fresh
 
 ROOT = Path(__file__).resolve().parents[1]
+EXPECTED_ACTION_REFS = {
+    "actions/checkout": "actions/checkout@v7.0.1",
+    "actions/setup-node": "actions/setup-node@v7.0.0",
+    "astral-sh/setup-uv": "astral-sh/setup-uv@v10.0.1",
+}
 
 REPRESENTATIVE_STATES = (
     ProjectState.create("Frontend Minimal", profile=Profile.FRONTEND, sample=False),
@@ -40,6 +45,20 @@ REPRESENTATIVE_STATES = (
 )
 
 
+def assert_expected_action_refs(workflow: dict[str, object]) -> None:
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    for job in jobs.values():
+        assert isinstance(job, dict)
+        for step in job.get("steps", []):
+            uses = step.get("uses")
+            if not isinstance(uses, str):
+                continue
+            action = uses.partition("@")[0]
+            if action in EXPECTED_ACTION_REFS:
+                assert uses == EXPECTED_ACTION_REFS[action]
+
+
 @pytest.mark.parametrize("state", REPRESENTATIVE_STATES, ids=lambda state: state.project_slug)
 def test_static_generated_harnesses_pass(state: ProjectState, tmp_path: Path) -> None:
     destination = tmp_path / "project"
@@ -56,6 +75,7 @@ def test_static_generated_harnesses_pass(state: ProjectState, tmp_path: Path) ->
     workflow = yaml.safe_load(
         (destination / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     )
+    assert_expected_action_refs(workflow)
     validate = workflow["jobs"]["validate"]
     services = validate.get("services", {})
     if state.has_backend:
@@ -82,12 +102,12 @@ def test_static_generated_harnesses_pass(state: ProjectState, tmp_path: Path) ->
     node_steps = [
         step
         for step in validate["steps"]
-        if step.get("uses") == "actions/setup-node@v7"
+        if step.get("uses") == "actions/setup-node@v7.0.0"
     ]
     python_steps = [
         step
         for step in validate["steps"]
-        if step.get("uses") == "astral-sh/setup-uv@v10"
+        if step.get("uses") == "astral-sh/setup-uv@v10.0.1"
     ]
     if state.has_backend:
         assert python_steps and all(
@@ -149,6 +169,7 @@ def test_top_level_harness_reports_python_311_syntax_cleanly(tmp_path: Path) -> 
 
 def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
     workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    assert_expected_action_refs(workflow)
     quality = workflow["jobs"]["generator-quality"]
     assert quality["strategy"]["matrix"]["python-version"] == [
         "3.11",
@@ -161,7 +182,9 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
 
     contracts = workflow["jobs"]["openapi-contracts"]
     contract_node_steps = [
-        step for step in contracts["steps"] if step.get("uses") == "actions/setup-node@v7"
+        step
+        for step in contracts["steps"]
+        if step.get("uses") == "actions/setup-node@v7.0.0"
     ]
     assert contract_node_steps[0]["with"]["node-version"] == "24"
     contract_commands = "\n".join(str(step.get("run", "")) for step in contracts["steps"])
@@ -179,7 +202,7 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
     generated_node_steps = [
         step
         for step in generated["steps"]
-        if step.get("uses") == "actions/setup-node@v7"
+        if step.get("uses") == "actions/setup-node@v7.0.0"
     ]
     assert generated_node_steps[0]["with"]["node-version"] == "24"
     steps = "\n".join(str(step.get("run", "")) for step in generated["steps"])
@@ -187,7 +210,9 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
     assert "uv run --frozen --no-sync app migrate up" in steps
     e2e = workflow["jobs"]["fullstack-auth-compose-e2e"]
     e2e_node_steps = [
-        step for step in e2e["steps"] if step.get("uses") == "actions/setup-node@v7"
+        step
+        for step in e2e["steps"]
+        if step.get("uses") == "actions/setup-node@v7.0.0"
     ]
     assert e2e_node_steps[0]["with"]["node-version"] == "24"
     e2e_steps = "\n".join(str(step.get("run", "")) for step in e2e["steps"])

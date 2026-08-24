@@ -38,13 +38,13 @@ jobs:
 {% endif %}{% elif sample %}    env:
       FRONTEND_API_UPSTREAM: http://host.docker.internal:8000
 {% endif %}    steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 {% if profile != 'frontend' %}
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           python-version: "3.13"
 {% endif %}{% if profile != 'backend' %}
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: "24"
           cache: npm
@@ -67,8 +67,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: "24"
           cache: npm
