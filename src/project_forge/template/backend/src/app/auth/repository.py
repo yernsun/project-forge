@@ -4,42 +4,104 @@ from datetime import datetime
 from uuid import UUID
 
 from psycopg import sql
+from psycopg.errors import UniqueViolation
 
-from app.auth.models import SessionPrincipal, User, Workspace
-from app.db.types import DbConnection
+from app.auth.errors import EmailAlreadyExistsError
+from app.auth.models import (
+    PasswordCredential,
+    SessionPrincipal,
+    UserIdentity,
+    UserWithCredential,
+    Workspace,
+)
+from app.db.types import DbConnection, DbRow
+
+
+def _identity_from_row(row: DbRow) -> UserIdentity:
+    return UserIdentity.model_validate(
+        {
+            "user_id": row["user_id"],
+            "email": row["email"],
+            "status": row["status"],
+            "version": row["version"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+    )
 
 
 class AuthRepository:
     def __init__(self, connection: DbConnection) -> None:
         self._connection = connection
 
-    async def add_user(self, user: User) -> User:
-        async with self._connection.cursor() as cursor:
-            await cursor.execute(
-                sql.SQL(
-                    "INSERT INTO users (user_id, email, password_hash, created_at) "
-                    "VALUES (%(user_id)s, %(email)s, %(password_hash)s, %(created_at)s) "
-                    "RETURNING user_id, email, password_hash, created_at"
-                ),
-                user.model_dump(mode="python"),
-            )
-            row = await cursor.fetchone()
+    async def add_user(
+        self, identity: UserIdentity, credential: PasswordCredential
+    ) -> UserIdentity:
+        values = identity.model_dump(mode="python") | credential.model_dump(mode="python")
+        try:
+            async with self._connection.cursor() as cursor:
+                await cursor.execute(
+                    sql.SQL(
+                        "INSERT INTO users ("
+                        "user_id, email, password_hash, status, version, created_at, updated_at, "
+                        "password_updated_at"
+                        ") VALUES ("
+                        "%(user_id)s, %(email)s, %(password_hash)s, %(status)s, %(version)s, "
+                        "%(created_at)s, %(updated_at)s, %(password_updated_at)s"
+                        ") RETURNING user_id, email, status, version, created_at, updated_at"
+                    ),
+                    values,
+                    prepare=True,
+                )
+                row = await cursor.fetchone()
+        except UniqueViolation as error:
+            raise EmailAlreadyExistsError() from error
         if row is None:
             raise RuntimeError("INSERT did not return a user")
-        return User.model_validate(row)
+        return _identity_from_row(row)
 
-    async def find_user_by_email(self, email: str) -> User | None:
+    async def find_user_by_email(self, email: str) -> UserWithCredential | None:
         async with self._connection.cursor() as cursor:
             await cursor.execute(
                 sql.SQL(
-                    "SELECT user_id, email, password_hash, created_at "
-                    "FROM users WHERE email = %(email)s"
+                    "SELECT user_id, email, password_hash, status, version, created_at, "
+                    "updated_at, password_updated_at "
+                    "FROM users WHERE lower(email) = lower(%(email)s)"
                 ),
                 {"email": email},
                 prepare=True,
             )
             row = await cursor.fetchone()
-        return User.model_validate(row) if row else None
+        if row is None:
+            return None
+        return UserWithCredential(
+            identity=_identity_from_row(row),
+            credential=PasswordCredential.model_validate(
+                {
+                    "user_id": row["user_id"],
+                    "password_hash": row["password_hash"],
+                    "password_updated_at": row["password_updated_at"],
+                }
+            ),
+        )
+
+    async def update_password_hash(
+        self, user_id: UUID, password_hash: str, updated_at: datetime
+    ) -> None:
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                sql.SQL(
+                    "UPDATE users SET password_hash = %(password_hash)s, "
+                    "password_updated_at = %(updated_at)s, updated_at = %(updated_at)s, "
+                    "version = version + 1 WHERE user_id = %(user_id)s"
+                ),
+                {
+                    "user_id": user_id,
+                    "password_hash": password_hash,
+                    "updated_at": updated_at,
+                },
+                prepare=True,
+            )
 
     async def add_workspace(self, workspace: Workspace, owner_id: UUID) -> Workspace:
         values = workspace.model_dump(mode="python") | {"owner_id": owner_id}
@@ -50,6 +112,7 @@ class AuthRepository:
                     "VALUES (%(workspace_id)s, %(name)s, %(created_at)s)"
                 ),
                 values,
+                prepare=True,
             )
             await cursor.execute(
                 sql.SQL(
@@ -57,6 +120,7 @@ class AuthRepository:
                     "VALUES (%(workspace_id)s, %(owner_id)s, %(created_at)s)"
                 ),
                 values,
+                prepare=True,
             )
         return workspace
 
@@ -114,6 +178,7 @@ class AuthRepository:
                     "expires_at": expires_at,
                     "created_at": created_at,
                 },
+                prepare=True,
             )
 
     async def resolve_session(self, token_hash: str, now: datetime) -> SessionPrincipal | None:
@@ -122,7 +187,8 @@ class AuthRepository:
                 sql.SQL(
                     "SELECT s.session_id, s.user_id, u.email, s.csrf_hash, s.expires_at "
                     "FROM sessions s JOIN users u ON u.user_id = s.user_id "
-                    "WHERE s.token_hash = %(token_hash)s AND s.expires_at > %(now)s"
+                    "WHERE s.token_hash = %(token_hash)s AND s.expires_at > %(now)s "
+                    "AND u.status = 'ACTIVE'"
                 ),
                 {"token_hash": token_hash, "now": now},
                 prepare=True,
@@ -137,3 +203,90 @@ class AuthRepository:
                 {"session_id": session_id},
                 prepare=True,
             )
+
+    async def consume_rate_limit(
+        self,
+        *,
+        scope: str,
+        subject_hash: str,
+        window_started_at: datetime,
+        expires_at: datetime,
+    ) -> int:
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                sql.SQL(
+                    "INSERT INTO auth_rate_limits ("
+                    "scope, subject_hash, window_started_at, attempt_count, expires_at"
+                    ") VALUES ("
+                    "%(scope)s, %(subject_hash)s, %(window_started_at)s, 1, %(expires_at)s"
+                    ") "
+                    "ON CONFLICT (scope, subject_hash, window_started_at) DO UPDATE "
+                    "SET attempt_count = auth_rate_limits.attempt_count + 1, "
+                    "expires_at = EXCLUDED.expires_at RETURNING attempt_count"
+                ),
+                {
+                    "scope": scope,
+                    "subject_hash": subject_hash,
+                    "window_started_at": window_started_at,
+                    "expires_at": expires_at,
+                },
+                prepare=True,
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            raise RuntimeError("rate-limit UPSERT did not return a count")
+        return int(row["attempt_count"])
+
+    async def clear_rate_limit(
+        self, *, scope: str, subject_hash: str, window_started_at: datetime
+    ) -> None:
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                sql.SQL(
+                    "DELETE FROM auth_rate_limits WHERE scope = %(scope)s "
+                    "AND subject_hash = %(subject_hash)s "
+                    "AND window_started_at = %(window_started_at)s"
+                ),
+                {
+                    "scope": scope,
+                    "subject_hash": subject_hash,
+                    "window_started_at": window_started_at,
+                },
+                prepare=True,
+            )
+
+    async def purge_expired(self, now: datetime) -> tuple[int, int]:
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                sql.SQL("DELETE FROM sessions WHERE expires_at <= %(now)s"),
+                {"now": now},
+                prepare=True,
+            )
+            sessions = cursor.rowcount
+            await cursor.execute(
+                sql.SQL("DELETE FROM auth_rate_limits WHERE expires_at <= %(now)s"),
+                {"now": now},
+                prepare=True,
+            )
+            rate_limits = cursor.rowcount
+        return sessions, rate_limits
+
+    async def count_expired(self, now: datetime) -> tuple[int, int]:
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                sql.SQL("SELECT count(*) AS count FROM sessions WHERE expires_at <= %(now)s"),
+                {"now": now},
+                prepare=True,
+            )
+            session_row = await cursor.fetchone()
+            await cursor.execute(
+                sql.SQL(
+                    "SELECT count(*) AS count FROM auth_rate_limits WHERE expires_at <= %(now)s"
+                ),
+                {"now": now},
+                prepare=True,
+            )
+            rate_limit_row = await cursor.fetchone()
+        if session_row is None or rate_limit_row is None:
+            raise RuntimeError("expired-auth count query returned no row")
+        return int(session_row["count"]), int(rate_limit_row["count"])

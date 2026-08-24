@@ -1,6 +1,12 @@
 """Project Forge public package."""
 
-__version__ = "0.1.0"
+from importlib.metadata import PackageNotFoundError, version
+
+__version__: str
+try:
+    __version__ = version("project-forge")
+except PackageNotFoundError:  # pragma: no cover - only possible for an uninstalled source tree
+    __version__ = "0+unknown"
 
 from project_forge.config import ProjectState
 

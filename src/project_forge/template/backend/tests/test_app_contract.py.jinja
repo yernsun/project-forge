@@ -1,9 +1,48 @@
 from app.main import app
+from app.settings import Settings
 
 
 def test_expected_routes_are_registered_without_starting_database() -> None:
     paths = set(app.openapi()["paths"])
     assert "/health/live" in paths
+{% if auth %}    assert "/api/v1/auth/signup" in paths
+    assert "/api/v1/auth/login" in paths
+    assert "/api/v1/auth/session" in paths
+    assert "/api/v1/auth/logout" in paths
+    assert "/api/v1/workspaces" in paths
+    session_schema = app.openapi()["components"]["schemas"]["SessionResponse"]["properties"]
+    assert session_schema["userId"]["format"] == "uuid"
+    assert session_schema["expiresAt"]["format"] == "date-time"
+    workspace_schema = app.openapi()["components"]["schemas"]["WorkspaceResponse"]["properties"]
+    assert workspace_schema["workspaceId"]["format"] == "uuid"
+    assert workspace_schema["createdAt"]["format"] == "date-time"
+    assert app.openapi()["paths"]["/api/v1/auth/signup"]["post"]["operationId"] == "signup"
+    login_operation = app.openapi()["paths"]["/api/v1/auth/login"]["post"]
+    assert login_operation["operationId"] == "login"
+    assert {"401", "403", "429"} <= login_operation["responses"].keys()
+    retry_after = login_operation["responses"]["429"]["headers"]["Retry-After"]
+    assert retry_after["schema"]["type"] == "integer"
+{% endif %}
 {% if sample and auth %}    assert "/api/v1/workspaces/{workspaceId}/items" in paths
+    item_operations = app.openapi()["paths"]["/api/v1/workspaces/{workspaceId}/items"]
+    assert item_operations["post"]["operationId"] == "createItem"
+    assert {"401", "403"} <= item_operations["post"]["responses"].keys()
 {% elif sample %}    assert "/api/v1/items" in paths
+{% endif %}
+
+
+def test_settings_only_expose_enabled_capabilities() -> None:
+{% if evented %}    assert "redis_url" in Settings.model_fields
+{% else %}    assert "redis_url" not in Settings.model_fields
+{% endif %}{% if auth %}    assert "session_cookie_secure" in Settings.model_fields
+    assert "auth_rate_limit_secret" in Settings.model_fields
+    assert "forwarded_allow_ips_csv" in Settings.model_fields
+{% else %}    assert "session_cookie_secure" not in Settings.model_fields
+    assert "auth_rate_limit_secret" not in Settings.model_fields
+    assert "forwarded_allow_ips_csv" not in Settings.model_fields
+    settings = Settings(
+        app_env="production",
+        database_url="postgresql://safe:secret@db/app",
+    )
+    assert settings.database_url == "postgresql://safe:secret@db/app"
 {% endif %}

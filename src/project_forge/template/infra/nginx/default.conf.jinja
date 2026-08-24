@@ -1,6 +1,8 @@
 server {
-    listen 8080;
+    listen 80;
     server_name _;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
 
     location = /healthz {
         access_log off;
@@ -8,21 +10,26 @@ server {
         return 200 'ok';
     }
 
-{% if profile != 'frontend' %}    location /api/ {
-        proxy_pass http://api:8000;
+{% if profile != 'frontend' or sample %}    location /api/ {
+        proxy_pass ${API_UPSTREAM};
+        proxy_http_version 1.1;
         proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
 
-    location /health/ {
-        proxy_pass http://api:8000;
+{% endif %}{% if profile != 'frontend' %}    location /health/ {
+        proxy_pass ${API_UPSTREAM};
         proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
     }
 
 {% endif %}{% if profile != 'backend' %}    location / {
         proxy_pass http://web:8080;
+        proxy_http_version 1.1;
         proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
     }
 {% else %}    location / {
         return 404;

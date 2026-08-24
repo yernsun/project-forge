@@ -6,7 +6,148 @@ on:
     branches: [main]
 
 jobs:
-  validate:
+  generator-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: src/project_forge/template/frontend/package-lock.json
+      - run: uv sync --all-groups --frozen
+      - run: uv run --frozen python harness/check.py
+      - run: uv run --frozen python harness/manage_openapi_contracts.py --check
+
+  generated-projects:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: app
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U app -d app"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: frontend-minimal
+            arguments: --profile frontend --no-sample
+            backend: false
+            extras: ""
+          - name: frontend-sample
+            arguments: --profile frontend --sample
+            backend: false
+            extras: ""
+          - name: backend-minimal
+            arguments: --profile backend --no-sample
+            backend: true
+            extras: ""
+          - name: fullstack-auth-sample
+            arguments: --profile fullstack --auth --sample
+            backend: true
+            extras: --extra auth
+          - name: fullstack-auth-evented
+            arguments: --profile fullstack --auth --evented --no-sample
+            backend: true
+            extras: --extra auth --extra evented
+    env:
+      DATABASE_URL: postgresql://app:app@localhost:5432/app
+      TEST_DATABASE_URL: postgresql://app:app@localhost:5432/app
+      POSTGRES_PASSWORD: ci-postgres-password
+      APP_ALLOWED_ORIGINS: http://localhost:5173
+      APP_AUTH_RATE_LIMIT_SECRET: ci-rate-limit-secret-at-least-32-bytes
+      FORWARDED_ALLOW_IPS: 127.0.0.1
+      PROJECT_FORGE_DESTRUCTIVE_PG_TESTS: "1"
+      FRONTEND_API_UPSTREAM: http://host.docker.internal:8000
+      HARNESS_STRICT: "1"
+      HARNESS_DOCKER: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: src/project_forge/template/frontend/package-lock.json
+      - run: uv sync --all-groups --frozen
+      - name: Render ${{ matrix.name }}
+        run: uv run --frozen project-forge init generated ${{ matrix.arguments }} --no-git
+      - name: Apply generated migrations
+        if: matrix.backend
+        working-directory: generated/backend
+        run: |
+          uv sync --frozen --all-groups ${{ matrix.extras }}
+          uv run --frozen --no-sync app migrate up
+      - name: Validate generated project
+        working-directory: generated
+        run: python harness/check.py
+
+  fullstack-auth-compose-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: src/project_forge/template/frontend/package-lock.json
+      - run: uv sync --all-groups --frozen
+      - name: Render full-stack auth project
+        run: >-
+          uv run --frozen project-forge init generated
+          --profile fullstack --auth --sample --no-git
+      - name: Start development Compose stack
+        working-directory: generated
+        run: docker compose -f docker-compose.dev.yml up -d --build
+      - name: Wait for application readiness
+        working-directory: generated
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://localhost:5173/health/ready >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose -f docker-compose.dev.yml ps
+          exit 1
+      - name: Install browser test dependencies
+        working-directory: generated/frontend
+        run: |
+          npm ci
+          npm run e2e:install
+      - name: Run authentication E2E flow
+        working-directory: generated/frontend
+        env:
+          E2E_BASE_URL: http://localhost:5173
+        run: npm run e2e
+      - name: Show Compose logs
+        if: always()
+        working-directory: generated
+        run: docker compose -f docker-compose.dev.yml logs --no-color --tail=200
+      - name: Stop Compose stack
+        if: always()
+        working-directory: generated
+        run: docker compose -f docker-compose.dev.yml down --volumes --remove-orphans
+
+  package-command:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -14,4 +155,19 @@ jobs:
         with:
           python-version: "3.13"
       - run: uv sync --all-groups --frozen
-      - run: uv run --frozen python harness/check.py
+      - run: uv build
+      - run: uv tool install --force dist/project_forge-*.whl
+      - run: echo "$(uv tool dir --bin)" >> "$GITHUB_PATH"
+      - run: project-forge --version
+      - run: |
+          project-forge --version > command-version.txt
+          "$(uv tool dir)/project-forge/bin/python" -m project_forge --version > module-version.txt
+          diff -u command-version.txt module-version.txt
+      - name: Smoke-test packaged template and bundled skill
+        run: |
+          project-forge init wheel-smoke --profile backend --no-sample --no-git
+          project-forge install-skill --destination wheel-smoke/.agents/skills/wheel-smoke
+          "$(uv tool dir)/project-forge/bin/python" wheel-smoke/harness/check_architecture.py
+          "$(uv tool dir)/project-forge/bin/python" wheel-smoke/harness/check_sql.py
+          test -f wheel-smoke/backend/src/app/main.py
+          test -f wheel-smoke/.agents/skills/wheel-smoke/SKILL.md

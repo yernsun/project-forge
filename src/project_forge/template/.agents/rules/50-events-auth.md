@@ -1,7 +1,17 @@
 # Optional capability rules
 
-- Auth uses opaque database-backed sessions, Argon2 password hashing, origin checks, and CSRF.
+- Auth uses opaque database-backed sessions and explicit Argon2id settings; never place credentials
+  or session tokens in logs, model reprs, URLs, or browser storage.
+- Every authenticated unsafe operation uses the shared Session + Origin/Referer + session-bound
+  double-submit CSRF dependency. Missing security headers are 403 responses, not validation errors.
+- Unknown users take the dummy-hash verification path. Successful login upgrades stale hashes.
+- Login and signup consume committed PostgreSQL rate-limit buckets before expensive password work;
+  do not roll failed-attempt counters back with the authentication transaction.
+- Production authentication fails closed unless cookies are Secure and allowed origins are HTTPS.
+- Authentication/session responses are not cacheable, and external clients branch on stable error
+  codes rather than server message text.
 - Workspace paths and membership checks are explicit; never infer tenant scope from payload data.
 - Outbox writes share the domain transaction.
-- Stream consumers acknowledge only after commit and must be idempotent.
+- Stream consumers acknowledge only after commit and must deduplicate by the envelope's stable
+  business event ID, never by the Redis stream entry ID.
 - Exhausted messages enter a DLQ; unknown outcomes are reviewed rather than retried forever.

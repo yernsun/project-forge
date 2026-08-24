@@ -1,4 +1,4 @@
-# {{ project_name }} Agent Guide
+# {{ project_name | e }} Agent Guide
 
 Follow `.agents/rules/` before editing. Rules override documentation.
 
@@ -19,6 +19,9 @@ Follow `.agents/rules/` before editing. Rules override documentation.
 - Compose identifiers only through `psycopg.sql.Identifier` and explicit allowlists.
 - Keep hot-path query shapes fixed. Use typed repository-local filters for complex searches.
 - Append dynamic predicates in canonical order and distinguish an omitted filter from SQL `NULL`.
+- Reuse `SqlPredicateBuilder` for safe mechanics, but keep identifiers, joins, and sort allowlists in
+  the repository. Escape LIKE patterns and use one array parameter for variable lists.
+- Prepare fixed hot-path statements; leave open-ended conditional shapes unprepared.
 - Never accept raw SQL fragments, column names, or sort directions from requests.
 
 ## Validation

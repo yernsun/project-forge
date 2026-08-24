@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,20 +26,51 @@ def require(tool: str) -> bool:
 
 
 def main() -> int:
+    run([sys.executable, "harness/check_architecture.py"])
     run([sys.executable, "harness/check_sql.py"])
     run([sys.executable, "harness/check_i18n.py"])
     backend = ROOT / "backend"
     if backend.exists() and require("uv"):
-        run(["uv", "sync", "--frozen", "--all-extras", "--all-groups"], backend)
-        run(["uv", "run", "--frozen", "ruff", "check", "."], backend)
-        run(["uv", "run", "--frozen", "mypy", "src/app"], backend)
-        run(["uv", "run", "--frozen", "pytest"], backend)
+        sync = ["uv", "sync", "--frozen", "--all-groups"]
+        if (backend / "src/app/auth").exists():
+            sync.extend(["--extra", "auth"])
+        if (backend / "src/app/events").exists():
+            sync.extend(["--extra", "evented"])
+        run(sync, backend)
+        run(["uv", "run", "--frozen", "--no-sync", "ruff", "check", "."], backend)
+        run(["uv", "run", "--frozen", "--no-sync", "mypy", "src/app"], backend)
+        run(["uv", "run", "--frozen", "--no-sync", "pytest"], backend)
     frontend = ROOT / "frontend"
     if frontend.exists() and require("npm"):
         install = ["npm", "ci"] if (frontend / "package-lock.json").exists() else ["npm", "install"]
         run(install, frontend)
         for script in ("lint", "typecheck", "test", "build"):
             run(["npm", "run", script], frontend)
+    if backend.exists() and frontend.exists() and require("uv") and require("npm"):
+        with tempfile.TemporaryDirectory(prefix="project-forge-openapi-") as temp_dir:
+            contract = Path(temp_dir) / "openapi.json"
+            run(
+                [
+                    "uv",
+                    "run",
+                    "--frozen",
+                    "--no-sync",
+                    "python",
+                    "../harness/export_openapi.py",
+                    str(contract),
+                ],
+                backend,
+            )
+            run(
+                [
+                    "node",
+                    "scripts/generate-api.mjs",
+                    "--check",
+                    "--source",
+                    str(contract),
+                ],
+                frontend,
+            )
     if os.getenv("HARNESS_DOCKER") == "1" and require("docker"):
         run(["docker", "compose", "-f", "docker-compose.dev.yml", "config"])
         run(["docker", "compose", "-f", "docker-compose.yml", "config"])

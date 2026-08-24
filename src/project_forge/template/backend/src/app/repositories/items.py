@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
 from uuid import UUID
 
 from psycopg import sql
 
+from app.db.query import SqlPredicateBuilder
 from app.db.types import DbConnection
 from app.domain.items import UNSET, Item, ItemFilter, ItemSort, ItemStatus
 
@@ -40,54 +40,49 @@ SORT_EXPRESSIONS: Mapping[ItemSort, sql.Composed] = {
 
 def build_item_list_query(
     workspace_id: UUID | None, filters: ItemFilter
-) -> tuple[sql.Composed, dict[str, Any], bool | None]:
+) -> tuple[sql.Composed, dict[str, object], bool]:
     """Build one safe ad-hoc search shape in canonical predicate order."""
-    predicates: list[sql.Composable] = [
-        sql.SQL("workspace_id IS NOT DISTINCT FROM %(workspace_id)s")
-    ]
-    parameters: dict[str, Any] = {
-        "workspace_id": workspace_id,
-        "limit": filters.limit,
-        "offset": filters.offset,
-    }
-    optional_count = 0
+    predicates = SqlPredicateBuilder()
+    if workspace_id is None:
+        predicates.add_is_null(sql.Identifier("workspace_id"))
+    else:
+        predicates.add_equals(sql.Identifier("workspace_id"), "workspace_id", workspace_id)
 
     if filters.name is not UNSET:
-        optional_count += 1
         if filters.name is None:
-            predicates.append(sql.SQL("name IS NULL"))
-        else:
-            predicates.append(sql.SQL("name ILIKE %(name_pattern)s"))
-            parameters["name_pattern"] = f"%{filters.name}%"
+            predicates.add_is_null(sql.Identifier("name"))
+        elif isinstance(filters.name, str):
+            predicates.add_ilike_contains(sql.Identifier("name"), "name_pattern", filters.name)
     if filters.description is not UNSET:
-        optional_count += 1
         if filters.description is None:
-            predicates.append(sql.SQL("description IS NULL"))
-        else:
-            predicates.append(sql.SQL("description ILIKE %(description_pattern)s"))
-            parameters["description_pattern"] = f"%{filters.description}%"
+            predicates.add_is_null(sql.Identifier("description"))
+        elif isinstance(filters.description, str):
+            predicates.add_ilike_contains(
+                sql.Identifier("description"), "description_pattern", filters.description
+            )
     if isinstance(filters.status, ItemStatus):
-        optional_count += 1
-        predicates.append(sql.SQL("status = %(status)s"))
-        parameters["status"] = filters.status.value
+        predicates.add_equals(sql.Identifier("status"), "status", filters.status.value)
     if filters.created_after is not UNSET:
-        optional_count += 1
-        predicates.append(sql.SQL("created_at >= %(created_after)s"))
-        parameters["created_after"] = filters.created_after
+        predicates.add_greater_than_or_equal(
+            sql.Identifier("created_at"), "created_after", filters.created_after
+        )
 
+    where_clause, parameters = predicates.build()
+    parameters.update({"limit": filters.limit, "offset": filters.offset})
     ordering = SORT_EXPRESSIONS[filters.sort]
     query = (
         sql.SQL(
             "SELECT item_id, workspace_id, name, description, status, version, "
             "created_at, updated_at FROM items WHERE "
         )
-        + sql.SQL(" AND ").join(predicates)
+        + where_clause
         + sql.SQL(" ORDER BY ")
         + ordering
         + sql.SQL(", item_id ASC LIMIT %(limit)s OFFSET %(offset)s")
     )
-    prepare = False if optional_count >= 3 else None
-    return query, parameters, prepare
+    # This search has an open-ended number of shapes. Avoid filling the driver's
+    # prepared statement cache; fixed hot-path statements above are prepared.
+    return query, parameters, False
 
 
 class ItemRepository:
@@ -106,7 +101,7 @@ class ItemRepository:
         values = item.model_dump(mode="python")
         values["status"] = item.status.value
         async with self._connection.cursor() as cursor:
-            await cursor.execute(INSERT_ITEM, values)
+            await cursor.execute(INSERT_ITEM, values, prepare=True)
             row = await cursor.fetchone()
         if row is None:
             raise RuntimeError("INSERT did not return an item")

@@ -1,27 +1,61 @@
 {
+  "locales": { "zh-CN": "简体中文", "en-US": "English" },
   "app": {
     "title": "Application workspace",
     "subtitle": "Initialized with composable engineering capabilities",
     "language": "Language",
-    "ready": "Project foundation is ready"
+    "ready": "Project foundation is ready",
+    "retry": "Try again"
   },
   "items": {
     "title": "Items",
     "name": "Name",
     "description": "Description",
     "status": "Status",
+    "statuses": { "active": "Active", "archived": "Archived" },
     "createdAt": "Created at",
     "create": "Create item",
     "refresh": "Refresh",
     "empty": "No items yet",
-    "workspaceId": "Workspace ID",
-    "loadError": "Unable to load items"
+    "chooseWorkspace": "Choose a workspace before loading items.",
+    "loadError": "Unable to load items",
+    "createError": "Unable to create the item"
   },
   "auth": {
-    "title": "Sign in",
+    "eyebrow": "Secure workspace",
+    "mode": "Authentication mode",
+    "loginTitle": "Welcome back",
+    "signupTitle": "Create your account",
     "email": "Email",
     "password": "Password",
     "login": "Sign in",
-    "loginError": "Sign in failed"
+    "signup": "Sign up",
+    "workspaceName": "Initial workspace",
+    "passwordPrompt": "Enter at least 12 characters",
+    "passwordWeak": "Weak",
+    "passwordMedium": "Medium",
+    "passwordStrong": "Strong",
+    "restoringSession": "Restoring your session…",
+    "signedInAs": "Signed in as",
+    "workspace": "Workspace",
+    "selectWorkspace": "Select a workspace",
+    "newWorkspace": "New workspace name",
+    "createWorkspace": "Create workspace",
+    "logout": "Sign out",
+    "errors": {
+      "authentication_required": "Sign in to continue.",
+      "invalid_credentials": "The email or password is incorrect.",
+      "invalid_or_expired_session": "Your session expired. Sign in again.",
+      "email_already_exists": "An account already exists for this email.",
+      "origin_not_allowed": "This application origin is not allowed.",
+      "signup_disabled": "Account registration is currently disabled.",
+      "auth_rate_limited": "Too many attempts. Try again in {seconds} seconds.",
+      "request_validation_failed": "Check the submitted fields and try again.",
+      "csrf_failed": "The security token expired. Refresh the page and try again.",
+      "workspace_access_denied": "You do not have access to this workspace.",
+      "session_failed": "The authentication service is unavailable.",
+      "workspaces_failed": "Unable to load workspaces.",
+      "unavailable": "The request could not be completed. Try again."
+    }
   }
 }

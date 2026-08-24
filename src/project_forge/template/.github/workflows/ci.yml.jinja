@@ -8,7 +8,36 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    steps:
+{% if profile != 'frontend' %}    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: app
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U app -d app"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+{% if evented %}      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+{% endif %}    env:
+      DATABASE_URL: postgresql://app:app@localhost:5432/app
+      TEST_DATABASE_URL: postgresql://app:app@localhost:5432/app
+      POSTGRES_PASSWORD: ci-postgres-password
+{% if evented %}      REDIS_URL: redis://localhost:6379/0
+{% endif %}{% if auth %}      APP_ALLOWED_ORIGINS: http://localhost:5173
+      APP_AUTH_RATE_LIMIT_SECRET: ci-rate-limit-secret-at-least-32-bytes
+      FORWARDED_ALLOW_IPS: 127.0.0.1
+      PROJECT_FORGE_DESTRUCTIVE_PG_TESTS: "1"
+{% endif %}{% elif sample %}    env:
+      FRONTEND_API_UPSTREAM: http://host.docker.internal:8000
+{% endif %}    steps:
       - uses: actions/checkout@v4
 {% if profile != 'frontend' %}
       - uses: astral-sh/setup-uv@v6
@@ -21,4 +50,55 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 {% endif %}
-      - run: python harness/check.py
+{% if profile != 'frontend' %}      - name: Apply migrations
+        working-directory: backend
+        run: |
+          uv sync --frozen --all-groups{% if auth %} --extra auth{% endif %}{% if evented %} --extra evented{% endif %}
+          uv run --frozen --no-sync app migrate up
+{% endif %}      - name: Validate generated project
+        env:
+          HARNESS_STRICT: "1"
+          HARNESS_DOCKER: "1"
+        run: python harness/check.py
+{% if profile == 'fullstack' and auth and sample %}
+
+  auth-compose-e2e:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Start development Compose stack
+        run: docker compose -f docker-compose.dev.yml up -d --build
+      - name: Wait for application readiness
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://localhost:5173/health/ready >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose -f docker-compose.dev.yml ps
+          exit 1
+      - name: Install browser test dependencies
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run e2e:install
+      - name: Run authentication E2E flow
+        working-directory: frontend
+        env:
+          E2E_BASE_URL: http://localhost:5173
+        run: npm run e2e
+      - name: Show Compose logs
+        if: always()
+        run: docker compose -f docker-compose.dev.yml logs --no-color --tail=200
+      - name: Stop Compose stack
+        if: always()
+        run: docker compose -f docker-compose.dev.yml down --volumes --remove-orphans
+{% endif %}

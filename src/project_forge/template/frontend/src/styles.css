@@ -21,14 +21,30 @@ select, input { border: 1px solid #cbd5e1; border-radius: 10px; background: whit
 select:focus, input:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgb(37 99 235 / 12%); }
 .content-card, .hero-card { margin-bottom: 20px; border: 1px solid #e2e8f0; border-radius: 18px; background: white; padding: 24px; box-shadow: 0 18px 45px rgb(15 23 42 / 6%); }
 .section-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 20px; }
-.create-form { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(240px, 2fr) auto; align-items: end; gap: 12px; margin-bottom: 22px; }
-.workspace-field { max-width: 480px; margin-bottom: 16px; }
+.create-form { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(240px, 2fr) auto; align-items: end; gap: 12px; margin: 18px 0 22px; }
 .error-message { color: #b91c1c; font-weight: 650; }
 .hero-card { display: flex; gap: 12px; align-items: center; }
 .status-dot { width: 10px; height: 10px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 0 5px rgb(34 197 94 / 13%); }
+.auth-card { width: min(620px, 100%); margin-inline: auto; }
+.auth-heading, .workspace-actions, .workspace-create { display: flex; align-items: end; gap: 12px; }
+.auth-heading { justify-content: space-between; align-items: flex-start; margin-bottom: 22px; }
+.auth-mode { display: flex; gap: 4px; padding: 4px; border-radius: 12px; background: #f1f5f9; }
+.auth-form { display: grid; gap: 16px; }
+.auth-form > .p-button { justify-self: start; min-width: 140px; }
+.auth-status { display: grid; justify-items: center; gap: 14px; text-align: center; }
+.auth-spinner { width: 42px; height: 42px; }
+.workspace-bar { display: grid; gap: 18px; }
+.workspace-identity h2 { font-size: 1.15rem; }
+.workspace-actions { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(320px, 2fr) auto; }
+.workspace-create { display: grid; grid-template-columns: minmax(180px, 1fr) auto; }
+.workspace-select { min-width: 220px; }
+.p-message { margin-block: 14px; }
 
 @media (max-width: 760px) {
   .topbar { flex-direction: column; }
   .create-form { grid-template-columns: 1fr; }
   .locale-control { width: 100%; }
+  .auth-heading { display: grid; }
+  .workspace-actions, .workspace-create { grid-template-columns: 1fr; align-items: stretch; }
+  .workspace-actions > .p-button, .workspace-create > .p-button { width: 100%; }
 }

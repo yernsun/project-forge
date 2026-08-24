@@ -398,6 +398,7 @@ dependencies = [
 [package.optional-dependencies]
 auth = [
     { name = "argon2-cffi" },
+    { name = "email-validator" },
 ]
 evented = [
     { name = "redis" },
@@ -415,6 +416,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "argon2-cffi", marker = "extra == 'auth'", specifier = ">=23.1,<26" },
+    { name = "email-validator", marker = "extra == 'auth'", specifier = ">=2.2,<3" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.116,<1" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2.9,<4" },
     { name = "pydantic", specifier = ">=2.11,<3" },

@@ -1,0 +1,103 @@
+from datetime import UTC, datetime
+from typing import cast
+from unittest.mock import AsyncMock
+
+import pytest
+
+from app.db.migration_engine import Migration, MigrationError, MigrationRunner, ordered_migrations
+{% if auth %}from app.db.migrations.auth import AUTH
+{% if sample %}from app.db.migrations.auth_items import AUTH_ITEMS
+{% endif %}from app.db.migrations.auth_security import AUTH_SECURITY
+{% endif %}{% if auth or sample or evented %}from app.db.migrations.core import CORE
+{% endif %}{% if sample %}from app.db.migrations.items import ITEMS
+{% endif %}{% if evented %}from app.db.migrations.event_idempotency import EVENT_IDEMPOTENCY
+from app.db.migrations.events import EVENTS
+{% endif %}from app.db.types import DbConnection
+from app.repositories.health import HealthRepository
+
+
+def migration(migration_id: str, dependencies: tuple[str, ...] = ()) -> Migration:
+    return Migration(migration_id=migration_id, dependencies=dependencies, up_sql="SELECT 1;")
+
+
+def test_migration_dag_is_topologically_sorted() -> None:
+    result = ordered_migrations((migration("b", ("a",)), migration("a")))
+    assert [entry.migration_id for entry in result] == ["a", "b"]
+
+
+def test_migration_dag_rejects_cycles() -> None:
+    with pytest.raises(MigrationError, match="cycle"):
+        ordered_migrations((migration("a", ("b",)), migration("b", ("a",))))
+
+
+def test_checksum_covers_dependencies_and_sql() -> None:
+    assert migration("a").checksum != migration("b").checksum
+    assert migration("a").checksum != Migration("a", (), "SELECT 2;").checksum
+
+
+@pytest.mark.asyncio
+async def test_current_validation_rejects_pending_but_history_validation_allows_it() -> None:
+    applied = migration("a")
+    pending = migration("b", ("a",))
+    runner = MigrationRunner(cast(DbConnection, object()), (applied, pending))
+    runner._tracking_exists = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    runner._applied = AsyncMock(  # type: ignore[method-assign]
+        return_value={"a": (applied.checksum, datetime.now(UTC))}
+    )
+
+    await runner.validate_history()
+    with pytest.raises(MigrationError, match=r"pending migrations.*b"):
+        await runner.validate_current()
+    with pytest.raises(MigrationError, match=r"pending migrations.*b"):
+        await runner.validate()
+
+
+@pytest.mark.asyncio
+async def test_readiness_repository_requires_a_current_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    validate_current = AsyncMock(side_effect=MigrationError("pending migration"))
+    monkeypatch.setattr(MigrationRunner, "validate_current", validate_current)
+    repository = HealthRepository(cast(DbConnection, object()))
+
+    with pytest.raises(MigrationError, match="pending migration"):
+        await repository.is_ready()
+    validate_current.assert_awaited_once_with()
+
+
+{% if auth %}def test_auth_security_is_forward_only() -> None:
+    result = ordered_migrations((AUTH_SECURITY, AUTH, CORE))
+    assert [entry.migration_id for entry in result] == [
+        "0001_core",
+        "0020_auth",
+        "0021_auth_security",
+    ]
+
+
+{% if sample %}def test_auth_items_fk_depends_on_both_capabilities() -> None:
+    result = ordered_migrations((AUTH_ITEMS, AUTH_SECURITY, AUTH, ITEMS, CORE))
+    assert [entry.migration_id for entry in result] == [
+        "0001_core",
+        "0010_items",
+        "0020_auth",
+        "0021_auth_security",
+        "0022_auth_items",
+    ]
+    assert "NOT VALID" in AUTH_ITEMS.up_sql
+    assert "i.workspace_id IS NOT NULL" in AUTH_ITEMS.up_sql
+    assert "VALIDATE CONSTRAINT fk_items_workspace" in AUTH_ITEMS.up_sql
+{% endif %}{% elif sample %}def test_items_migration_depends_on_core() -> None:
+    result = ordered_migrations((ITEMS, CORE))
+    assert [entry.migration_id for entry in result] == ["0001_core", "0010_items"]
+{% endif %}
+
+
+{% if evented %}def test_event_idempotency_migration_is_forward_only() -> None:
+    result = ordered_migrations((EVENT_IDEMPOTENCY, EVENTS, CORE))
+    assert [entry.migration_id for entry in result] == [
+        "0001_core",
+        "0030_events",
+        "0031_event_idempotency",
+    ]
+    assert "RENAME COLUMN message_id TO event_id" in EVENT_IDEMPOTENCY.up_sql
+{% endif %}

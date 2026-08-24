@@ -1,0 +1,44 @@
+import { defineStore } from 'pinia'
+import { ref } from 'vue'
+
+import type { WorkspaceDto } from '@/shared/api/client'
+
+const STORAGE_PREFIX = '{{ project_slug }}.workspaceId'
+
+export const useWorkspaceStore = defineStore('workspace', () => {
+  const activeUserId = ref<string | null>(null)
+  const workspaceId = ref<string | null>(null)
+
+  function storageKey(userId: string): string {
+    return `${STORAGE_PREFIX}.${userId}`
+  }
+
+  function activate(userId: string): void {
+    if (activeUserId.value === userId) return
+    activeUserId.value = userId
+    workspaceId.value = localStorage.getItem(storageKey(userId))
+  }
+
+  function select(value: string | null): void {
+    workspaceId.value = value
+    if (!activeUserId.value) return
+    const key = storageKey(activeUserId.value)
+    if (value) localStorage.setItem(key, value)
+    else localStorage.removeItem(key)
+  }
+
+  function reconcile(userId: string, workspaces: readonly WorkspaceDto[]): void {
+    activate(userId)
+    const available = new Set(workspaces.map((workspace) => workspace.workspaceId))
+    if (!workspaceId.value || !available.has(workspaceId.value)) {
+      select(workspaces[0]?.workspaceId ?? null)
+    }
+  }
+
+  function deactivate(): void {
+    activeUserId.value = null
+    workspaceId.value = null
+  }
+
+  return { activeUserId, workspaceId, activate, select, reconcile, deactivate }
+})

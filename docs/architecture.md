@@ -7,14 +7,28 @@ Project Forge has three layers:
 3. The update engine compares the previous template baseline, the current project, and the new
    desired render. One-sided changes apply automatically; double-sided changes become `.rej`.
 
-The generated backend follows API → Service → Unit of Work → Repository. A Service opens the
-transaction, a single-use task-bound Unit of Work owns one Psycopg connection and repository
-lifecycle, and repositories contain all persistence SQL and row mapping.
+The generated backend follows the enforced dependency direction
+`API → Service → Unit of Work → Repository → PostgreSQL`. API DTOs, domain models, credential
+records, and database row mapping remain separate. A Service opens the transaction, a single-use
+task-bound Unit of Work owns one Psycopg connection and repository lifecycle, and repositories
+contain all persistence SQL and row mapping. The generated AST harness rejects framework imports in
+the domain, HTTP imports in Services, API-to-repository shortcuts, and SQL outside persistence
+adapters.
 
 Conditional SQL deliberately uses two modes. Stable hot paths keep fixed statements for predictable
-query plans. Complex searches accept a typed filter object, append predicates in canonical order,
-bind named values, and whitelist every identifier and sort direction through `psycopg.sql`.
-Highly ad-hoc shapes opt out of preparation; stable shapes retain driver-managed preparation.
+query plans. Complex searches accept a typed filter object, distinguish `UNSET` from SQL `NULL`,
+append predicates in canonical order, bind named values, and whitelist every identifier and sort
+direction through `psycopg.sql`. Array filters use one `ANY()` parameter, empty arrays mean no rows,
+and `ILIKE` values escape wildcard metacharacters. Open-ended shapes use `prepare=False`; fixed
+queries use `prepare=True`.
 
-The generated frontend keeps server state in Vue Query, client-owned state in Pinia, DTO types from
-OpenAPI, and locale state in one i18n module that also updates PrimeVue's locale object.
+Optional authentication uses Argon2id passwords and opaque PostgreSQL sessions, never JWT or Redis.
+The session cookie is HttpOnly; a readable, session-bound CSRF token and exact allowed-origin check
+protect every authenticated unsafe method. PostgreSQL also owns HMAC-pseudonymized fixed-window
+login and signup limits. Production fails closed unless cookies are Secure, origins are HTTPS, and a
+dedicated rate-limit secret is configured.
+
+The generated frontend keeps server state in Vue Query, client-owned locale and per-user workspace
+selection in Pinia, DTO types in one of four real FastAPI OpenAPI contracts, and locale state in one
+i18n module that also updates PrimeVue's locale object. Its application shell has explicit loading,
+guest, and authenticated states; protected queries do not mount for guests.

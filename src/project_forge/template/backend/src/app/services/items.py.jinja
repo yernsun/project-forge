@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from uuid import UUID, uuid4
 
-from app.domain.base import utc_now
+{% if auth %}from app.auth.errors import WorkspaceAccessDeniedError
+{% endif %}from app.domain.base import utc_now
 from app.domain.items import Item, ItemFilter, ItemStatus
 {% if evented %}from app.events.models import EventEnvelope
 {% endif %}from app.uow.factory import UnitOfWorkFactory
@@ -22,7 +23,7 @@ class ItemService:
         unit_of_work: UnitOfWork, user_id: UUID, workspace_id: UUID
     ) -> None:
         if not await unit_of_work.auth.is_workspace_member(user_id, workspace_id):
-            raise PermissionError("workspace membership required")
+            raise WorkspaceAccessDeniedError()
 
 {% endif %}    async def create(
         self,

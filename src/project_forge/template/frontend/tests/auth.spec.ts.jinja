@@ -1,0 +1,107 @@
+import { describe, expect, it, vi } from 'vitest'
+
+{% if auth %}import { QueryClient } from '@tanstack/vue-query'
+import { createPinia, setActivePinia } from 'pinia'
+
+import {
+  AUTH_UNAUTHORIZED_EVENT,
+  ApiRequestError,
+  createWorkspace,
+  getSession,
+  readCsrfToken,
+} from '@/shared/api/client'
+import { useWorkspaceStore } from '@/features/auth/workspace'
+import {
+  applySessionTransition,
+  authErrorTranslationKey,
+  authQueryKeys,
+} from '@/features/auth/session'
+
+describe('session API client', () => {
+  it('prefers the production CSRF cookie and sends it on unsafe requests', async () => {
+    vi.spyOn(document, 'cookie', 'get').mockReturnValue(
+      '__Host-{{ project_slug }}-csrf=production-token; {{ project_slug }}-csrf=dev-token',
+    )
+    let captured: Request | null = null
+    vi.stubGlobal('fetch', vi.fn(async (request: Request) => {
+      captured = request
+      return new Response(JSON.stringify({
+        workspaceId: '00000000-0000-4000-8000-000000000001',
+        name: 'Workspace',
+        createdAt: '2026-01-01T00:00:00Z',
+      }), { status: 201, headers: { 'Content-Type': 'application/json' } })
+    }))
+
+    await createWorkspace('Workspace')
+
+    expect(readCsrfToken()).toBe('production-token')
+    expect(captured).not.toBeNull()
+    expect((captured as unknown as Request).headers.get('X-CSRF-Token')).toBe('production-token')
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it('turns a 401 session response into guest state and emits the global signal', async () => {
+    const unauthorized = vi.fn()
+    window.addEventListener(AUTH_UNAUTHORIZED_EVENT, unauthorized)
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ code: 'authentication_required', message: 'authentication required' }),
+      { status: 401, headers: { 'Content-Type': 'application/json' } },
+    )))
+
+    await expect(getSession()).resolves.toBeNull()
+    expect(unauthorized).toHaveBeenCalledOnce()
+    window.removeEventListener(AUTH_UNAUTHORIZED_EVENT, unauthorized)
+    vi.unstubAllGlobals()
+  })
+
+  it('isolates persisted workspace selection by authenticated user', () => {
+    localStorage.setItem('{{ project_slug }}.workspaceId.user-a', 'workspace-a')
+    localStorage.setItem('{{ project_slug }}.workspaceId.user-b', 'workspace-b')
+    setActivePinia(createPinia())
+    const store = useWorkspaceStore()
+
+    store.reconcile('user-a', [{ workspaceId: 'workspace-a', name: 'A', createdAt: '2026-01-01T00:00:00Z' }])
+    expect(store.workspaceId).toBe('workspace-a')
+    store.reconcile('user-b', [{ workspaceId: 'workspace-b', name: 'B', createdAt: '2026-01-01T00:00:00Z' }])
+    expect(store.workspaceId).toBe('workspace-b')
+  })
+
+  it('seeds and invalidates both remote-state boundaries after authentication changes', async () => {
+    const queryClient = new QueryClient()
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    const session = {
+      userId: '00000000-0000-4000-8000-000000000001',
+      email: 'person@example.test',
+      expiresAt: '2026-01-02T00:00:00Z',
+    }
+
+    await applySessionTransition(queryClient, session)
+
+    expect(queryClient.getQueryData(authQueryKeys.session)).toEqual(session)
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: authQueryKeys.session, refetchType: 'none' })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: authQueryKeys.workspaces, refetchType: 'none' })
+  })
+
+  it.each([
+    'authentication_required',
+    'invalid_credentials',
+    'invalid_or_expired_session',
+    'origin_not_allowed',
+    'csrf_failed',
+    'workspace_access_denied',
+    'signup_disabled',
+    'email_already_exists',
+    'auth_rate_limited',
+    'request_validation_failed',
+  ])('maps the stable %s error code to a locale key', (code) => {
+    const error = new ApiRequestError(401, code, 'safe message')
+    expect(authErrorTranslationKey(error)).toBe(`auth.errors.${code}`)
+  })
+})
+{% else %}describe('authentication capability', () => {
+  it('is intentionally absent from this generated profile', () => {
+    expect(true).toBe(true)
+  })
+})
+{% endif %}

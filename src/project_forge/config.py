@@ -1,14 +1,25 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Self
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from project_forge import __version__
+
+_UNSAFE_PROJECT_NAME_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
+
+
+def _reject_unsafe_project_name_characters(value: str) -> None:
+    if any(
+        unicodedata.category(character) in _UNSAFE_PROJECT_NAME_CATEGORIES
+        for character in value
+    ):
+        raise ValueError("project name must not contain control or line-separator characters")
 
 
 class Profile(StrEnum):
@@ -59,6 +70,22 @@ class ProjectState(BaseModel):
     sample: bool = Field(default=True, description="Generate the sample Items vertical slice")
     default_locale: Locale = Field(default=Locale.ZH_CN, description="Default UI locale")
 
+    @field_validator("project_name")
+    @classmethod
+    def reject_unsafe_project_name_characters(cls, value: str) -> str:
+        _reject_unsafe_project_name_characters(value)
+        return value
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_profile_defaults(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or data.get("sample") is not None:
+            return data
+        resolved = dict(data)
+        profile = Profile(resolved.get("profile", Profile.FULLSTACK))
+        resolved["sample"] = profile is not Profile.FRONTEND
+        return resolved
+
     @model_validator(mode="after")
     def validate_capabilities(self) -> Self:
         has_backend = self.profile in {Profile.BACKEND, Profile.FULLSTACK}
@@ -77,16 +104,18 @@ class ProjectState(BaseModel):
         profile: Profile = Profile.FULLSTACK,
         auth: bool = False,
         evented: bool = False,
-        sample: bool = True,
+        sample: bool | None = None,
         default_locale: Locale = Locale.ZH_CN,
     ) -> Self:
+        _reject_unsafe_project_name_characters(project_name)
+        resolved_sample = sample if sample is not None else profile is not Profile.FRONTEND
         return cls(
             project_name=project_name.strip(),
             project_slug=slugify(project_slug or project_name),
             profile=profile,
             auth=auth,
             evented=evented,
-            sample=sample,
+            sample=resolved_sample,
             default_locale=default_locale,
         )
 

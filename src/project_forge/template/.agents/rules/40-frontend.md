@@ -5,3 +5,9 @@
 - Use PrimeVue components according to their current API and preserve accessible labels.
 - Put every user-facing message in both locale files and run the i18n key check.
 - Generate API types from OpenAPI; do not hand-maintain duplicate transport contracts.
+- Treat an authentication `401` during session restoration as guest state, and do not mount
+  protected queries until restoration completes.
+- Send unsafe requests through the shared API client so its CSRF middleware cannot be bypassed.
+- Persist only client-owned selections. Revalidate a stored workspace ID against the authenticated
+  workspace query before using it.
+- Keep `<html lang>` and PrimeVue locale synchronized with the active application locale.

@@ -23,7 +23,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await pool.open()
     try:
         async with pool.connection() as connection:
-            await MigrationRunner(connection, MIGRATIONS).validate()
+            await MigrationRunner(connection, MIGRATIONS).validate_current()
         app.state.database_pool = pool
         app.state.unit_of_work_factory = UnitOfWorkFactory(pool)
         yield
@@ -32,7 +32,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
-    application = FastAPI(title="{{ project_name }} API", version="0.1.0", lifespan=lifespan)
+    application = FastAPI(
+        title={{ (project_name ~ " API") | tojson }},
+        version="0.1.0",
+        lifespan=lifespan,
+    )
     application.include_router(health_router)
 {% if sample %}    application.include_router(items_router)
 {% endif %}{% if auth %}    application.include_router(auth_router)

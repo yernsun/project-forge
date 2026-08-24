@@ -3,12 +3,27 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Path, Query, status
-from pydantic import Field
+from fastapi import (
+    APIRouter,
+{% if auth %}    Depends,
+{% endif %}    Path,
+    Query,
+    status,
+)
+from pydantic import AwareDatetime, Field
 
-from app.api.dependencies import UnitOfWorkFactoryDep
+from app.api.dependencies import (
+    UnitOfWorkFactoryDep,
+{% if auth %}    prevent_auth_caching,
+{% endif %})
 from app.api.models import StrictApiModel
-{% if auth %}from app.auth.api import CurrentSessionDep
+{% if auth %}from app.auth.api import (
+    AUTH_SCOPED_READ_RESPONSES,
+    AUTH_UNSAFE_RESPONSES,
+    AUTH_VALIDATION_RESPONSES,
+    CurrentSessionDep,
+    UnsafeSessionDep,
+)
 {% endif %}from app.domain.items import UNSET, Item, ItemFilter, ItemSort, ItemStatus
 from app.services.items import ItemService
 
@@ -16,6 +31,9 @@ router = APIRouter(
 {% if auth %}    prefix="/api/v1/workspaces/{workspaceId}/items",
 {% else %}    prefix="/api/v1/items",
 {% endif %}    tags=["items"],
+{% if auth %}    dependencies=[Depends(prevent_auth_caching)],
+    responses=AUTH_VALIDATION_RESPONSES,
+{% endif %}
 )
 
 
@@ -24,44 +42,74 @@ class CreateItemRequest(StrictApiModel):
     description: str | None = Field(default=None, max_length=2000, description="Optional details")
 
 
+class ItemResponse(StrictApiModel):
+    item_id: UUID = Field(description="Stable item ID")
+    workspace_id: UUID | None = Field(description="Owning workspace when auth is enabled")
+    name: str = Field(description="Display name")
+    description: str | None = Field(description="Optional details")
+    status: ItemStatus = Field(description="Lifecycle status")
+    version: int = Field(description="Optimistic-lock version")
+    created_at: AwareDatetime = Field(description="UTC creation timestamp")
+    updated_at: AwareDatetime = Field(description="UTC last-update timestamp")
+
+    @classmethod
+    def from_domain(cls, item: Item) -> ItemResponse:
+        return cls.model_validate(item.model_dump(mode="python"))
+
+
 class ItemListResponse(StrictApiModel):
-    items: tuple[Item, ...] = Field(description="Current page")
+    items: tuple[ItemResponse, ...] = Field(description="Current page")
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    status_code=status.HTTP_201_CREATED,
+    operation_id="createItem",
+{% if auth %}    responses=AUTH_UNSAFE_RESPONSES,
+{% endif %})
 async def create_item(
     request: CreateItemRequest,
     unit_of_work_factory: UnitOfWorkFactoryDep,
-{% if auth %}    session: CurrentSessionDep,
+{% if auth %}    session: UnsafeSessionDep,
     workspace_id: Annotated[UUID, Path(alias="workspaceId", description="Workspace ID")],
-{% endif %}) -> Item:
+{% endif %}) -> ItemResponse:
     service = ItemService(unit_of_work_factory)
-    return await service.create(
+    item = await service.create(
 {% if auth %}        workspace_id=workspace_id,
         user_id=session.user_id,
 {% else %}        workspace_id=None,
 {% endif %}        name=request.name,
         description=request.description,
     )
+    return ItemResponse.from_domain(item)
 
 
-@router.get("/{itemId}")
+@router.get(
+    "/{itemId}",
+    operation_id="getItem",
+{% if auth %}    responses=AUTH_SCOPED_READ_RESPONSES,
+{% endif %})
 async def get_item(
     item_id: Annotated[UUID, Path(alias="itemId", description="Item ID")],
     unit_of_work_factory: UnitOfWorkFactoryDep,
 {% if auth %}    session: CurrentSessionDep,
     workspace_id: Annotated[UUID, Path(alias="workspaceId", description="Workspace ID")],
-{% endif %}) -> Item:
+{% endif %}) -> ItemResponse:
     service = ItemService(unit_of_work_factory)
-    return await service.get(
+    item = await service.get(
         item_id,
 {% if auth %}        workspace_id,
         session.user_id,
 {% else %}        None,
 {% endif %}    )
+    return ItemResponse.from_domain(item)
 
 
-@router.get("")
+@router.get(
+    "",
+    operation_id="listItems",
+{% if auth %}    responses=AUTH_SCOPED_READ_RESPONSES,
+{% endif %})
 async def list_items(
     unit_of_work_factory: UnitOfWorkFactoryDep,
 {% if auth %}    session: CurrentSessionDep,
@@ -93,4 +141,4 @@ async def list_items(
 {% else %}        None,
         filters,
 {% endif %}    )
-    return ItemListResponse(items=items)
+    return ItemListResponse(items=tuple(ItemResponse.from_domain(item) for item in items))

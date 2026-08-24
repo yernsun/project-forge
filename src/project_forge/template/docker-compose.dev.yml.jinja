@@ -36,9 +36,12 @@ services:
     environment: &backend-env
       DATABASE_URL: postgresql://app:app@db:5432/app
       APP_ENV: development
-      APP_ALLOWED_ORIGINS: http://localhost:5173
+{% if auth %}      APP_ALLOWED_ORIGINS: http://localhost:5173
       APP_SESSION_COOKIE_SECURE: "false"
-{% if evented %}      REDIS_URL: redis://redis:6379/0
+      FORWARDED_ALLOW_IPS: 127.0.0.1
+      APP_AUTH_RATE_LIMIT_SECRET: development-only-rate-limit-secret-change-me
+      APP_SIGNUP_ENABLED: "true"
+{% endif %}{% if evented %}      REDIS_URL: redis://redis:6379/0
 {% endif %}    command: ["app", "migrate", "up"]
     depends_on:
       db:
@@ -79,6 +82,10 @@ services:
     command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
     environment:
       VITE_API_BASE_URL: ""
+{% if profile == 'fullstack' %}      VITE_API_PROXY_TARGET: http://api:8000
+{% else %}      VITE_API_PROXY_TARGET: ${FRONTEND_API_PROXY_TARGET:-http://host.docker.internal:8000}
+{% endif %}    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "5173:5173"
     volumes:

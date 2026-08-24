@@ -1,12 +1,19 @@
 from app.db.migration_engine import Migration
 {% if auth %}from app.db.migrations.auth import AUTH
+{% if sample %}from app.db.migrations.auth_items import AUTH_ITEMS
+{% endif %}from app.db.migrations.auth_security import AUTH_SECURITY
 {% endif %}from app.db.migrations.core import CORE
-{% if evented %}from app.db.migrations.events import EVENTS
+{% if evented %}from app.db.migrations.event_idempotency import EVENT_IDEMPOTENCY
+from app.db.migrations.events import EVENTS
 {% endif %}{% if sample %}from app.db.migrations.items import ITEMS
 {% endif %}
 MIGRATIONS: tuple[Migration, ...] = (
     CORE,
 {% if sample %}    ITEMS,
 {% endif %}{% if auth %}    AUTH,
+    AUTH_SECURITY,
+{% if sample %}    AUTH_ITEMS,
+{% endif %}
 {% endif %}{% if evented %}    EVENTS,
+    EVENT_IDEMPOTENCY,
 {% endif %})

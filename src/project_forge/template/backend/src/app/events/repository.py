@@ -33,6 +33,7 @@ class OutboxRepository:
                     "created_at": envelope.created_at,
                     "available_at": envelope.created_at,
                 },
+                prepare=True,
             )
 
     async def claim(self, worker_id: str, limit: int = 100) -> tuple[OutboxRecord, ...]:
@@ -55,7 +56,7 @@ class OutboxRepository:
                     "limit": limit,
                     "worker_id": worker_id,
                 },
-                prepare=False,
+                prepare=True,
             )
             rows = await cursor.fetchall()
         return tuple(
@@ -80,6 +81,7 @@ class OutboxRepository:
                     "locked_by = NULL WHERE event_id = %(event_id)s"
                 ),
                 {"now": utc_now(), "event_id": event_id},
+                prepare=True,
             )
 
     async def release_with_backoff(self, event_id: UUID, attempts: int) -> None:
@@ -94,6 +96,7 @@ class OutboxRepository:
                     "available_at": utc_now() + timedelta(seconds=delay_seconds),
                     "event_id": event_id,
                 },
+                prepare=True,
             )
 
 
@@ -101,19 +104,22 @@ class ProcessedMessageRepository:
     def __init__(self, connection: DbConnection) -> None:
         self._connection = connection
 
-    async def mark_once(self, consumer_name: str, message_id: str) -> bool:
+    async def mark_once(self, consumer_name: str, event_id: UUID) -> bool:
+        """Persist the stable business event ID, never the Redis stream entry ID."""
+
         async with self._connection.cursor() as cursor:
             await cursor.execute(
                 sql.SQL(
-                    "INSERT INTO processed_messages (consumer_name, message_id, processed_at) "
-                    "VALUES (%(consumer_name)s, %(message_id)s, %(processed_at)s) "
-                    "ON CONFLICT DO NOTHING RETURNING message_id"
+                    "INSERT INTO processed_messages (consumer_name, event_id, processed_at) "
+                    "VALUES (%(consumer_name)s, %(event_id)s, %(processed_at)s) "
+                    "ON CONFLICT DO NOTHING RETURNING event_id"
                 ),
                 {
                     "consumer_name": consumer_name,
-                    "message_id": message_id,
+                    "event_id": str(event_id),
                     "processed_at": utc_now(),
                 },
+                prepare=True,
             )
             row = await cursor.fetchone()
         return row is not None

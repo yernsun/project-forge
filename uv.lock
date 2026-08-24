@@ -447,10 +447,11 @@ wheels = [
 
 [[package]]
 name = "project-forge"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "copier" },
+    { name = "packaging" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "typer" },
@@ -468,6 +469,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "copier", specifier = ">=9.12,<10" },
+    { name = "packaging", specifier = ">=24,<27" },
     { name = "pydantic", specifier = ">=2.11,<3" },
     { name = "pyyaml", specifier = ">=6.0.2,<7" },
     { name = "typer", specifier = ">=0.16,<1" },

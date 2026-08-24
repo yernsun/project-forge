@@ -1,0 +1,4 @@
+{
+  "variant": "{% if auth and sample %}auth+sample{% elif auth %}auth{% elif sample %}sample{% else %}core{% endif %}",
+  "source": "scripts/openapi/contracts/{% if auth and sample %}auth-sample{% elif auth %}auth{% elif sample %}sample{% else %}core{% endif %}.json"
+}

@@ -1,0 +1,190 @@
+from __future__ import annotations
+
+from enum import StrEnum
+from functools import lru_cache
+{% if auth %}from ipaddress import ip_address, ip_network
+from urllib.parse import urlsplit
+{% endif %}
+{% if auth %}from pydantic import Field, SecretStr, model_validator
+{% else %}from pydantic import Field, model_validator
+{% endif %}from pydantic_settings import BaseSettings, SettingsConfigDict
+
+DEVELOPMENT_DATABASE_URL = "postgresql://app:app@localhost:5432/app"
+{% if auth %}DEVELOPMENT_RATE_LIMIT_SECRET = "development-only-auth-rate-limit-secret"
+COOKIE_PREFIX = "{{ project_slug }}"
+{% endif %}
+
+
+class AppEnvironment(StrEnum):
+    DEVELOPMENT = "development"
+    TEST = "test"
+    PRODUCTION = "production"
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    app_env: AppEnvironment = Field(
+        default=AppEnvironment.DEVELOPMENT, validation_alias="APP_ENV"
+    )
+    database_url: str = Field(
+        default=DEVELOPMENT_DATABASE_URL, validation_alias="DATABASE_URL"
+    )
+{% if evented %}    redis_url: str = Field(
+        default="redis://localhost:6379/0", validation_alias="REDIS_URL"
+    )
+{% endif %}{% if auth %}    allowed_origins_csv: str = Field(
+        default="http://localhost:5173", validation_alias="APP_ALLOWED_ORIGINS"
+    )
+    forwarded_allow_ips_csv: str = Field(
+        default="", validation_alias="FORWARDED_ALLOW_IPS"
+    )
+    session_cookie_secure: bool | None = Field(
+        default=None, validation_alias="APP_SESSION_COOKIE_SECURE"
+    )
+    session_ttl_seconds: int = Field(
+        default=60 * 60 * 24 * 14, ge=300, validation_alias="APP_SESSION_TTL_SECONDS"
+    )
+    signup_enabled: bool | None = Field(default=None, validation_alias="APP_SIGNUP_ENABLED")
+    auth_rate_limit_secret: SecretStr = Field(
+        default=SecretStr(DEVELOPMENT_RATE_LIMIT_SECRET),
+        validation_alias="APP_AUTH_RATE_LIMIT_SECRET",
+    )
+    auth_login_email_ip_limit: int = Field(
+        default=5, ge=1, le=1000, validation_alias="APP_AUTH_LOGIN_EMAIL_IP_LIMIT"
+    )
+    auth_login_email_ip_window_seconds: int = Field(
+        default=300,
+        ge=10,
+        le=86400,
+        validation_alias="APP_AUTH_LOGIN_EMAIL_IP_WINDOW_SECONDS",
+    )
+    auth_login_ip_limit: int = Field(
+        default=30, ge=1, le=1000, validation_alias="APP_AUTH_LOGIN_IP_LIMIT"
+    )
+    auth_login_ip_window_seconds: int = Field(
+        default=300,
+        ge=10,
+        le=86400,
+        validation_alias="APP_AUTH_LOGIN_IP_WINDOW_SECONDS",
+    )
+    auth_signup_ip_limit: int = Field(
+        default=5, ge=1, le=1000, validation_alias="APP_AUTH_SIGNUP_IP_LIMIT"
+    )
+    auth_signup_ip_window_seconds: int = Field(
+        default=3600,
+        ge=10,
+        le=86400,
+        validation_alias="APP_AUTH_SIGNUP_IP_WINDOW_SECONDS",
+    )
+{% endif %}
+
+    @model_validator(mode="after")
+    def require_safe_production_settings(self) -> Settings:
+        if self.app_env is not AppEnvironment.PRODUCTION:
+            return self
+        if self.database_url == DEVELOPMENT_DATABASE_URL:
+            raise ValueError("production requires an explicit database URL")
+{% if auth %}
+        if not self.cookies_secure:
+            raise ValueError("production requires secure session cookies")
+        origins = self.allowed_origins
+        if not origins or any(urlsplit(origin).scheme != "https" for origin in origins):
+            raise ValueError("production allowed origins must be non-empty HTTPS origins")
+        rate_limit_secret = self.auth_rate_limit_secret.get_secret_value()
+        if (
+            rate_limit_secret == DEVELOPMENT_RATE_LIMIT_SECRET
+            or len(rate_limit_secret.encode()) < 32
+        ):
+            raise ValueError("production requires a unique 32-byte auth rate-limit secret")
+        if not self.forwarded_allow_ips:
+            raise ValueError("production requires explicit trusted proxy IPs or CIDRs")
+{% endif %}
+        return self
+
+{% if auth %}
+    @property
+    def allowed_origins(self) -> frozenset[str]:
+        origins: set[str] = set()
+        for value in self.allowed_origins_csv.split(","):
+            origin = value.strip().rstrip("/")
+            if not origin:
+                continue
+            parsed = urlsplit(origin)
+            try:
+                port = parsed.port
+            except ValueError as error:
+                raise ValueError("allowed origins must use a valid port") from error
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.path
+                or parsed.query
+                or parsed.fragment
+                or (port is not None and not 1 <= port <= 65535)
+            ):
+                raise ValueError(
+                    "allowed origins must be HTTP(S) origins without credentials or paths"
+                )
+            origins.add(origin)
+        return frozenset(origins)
+
+    @property
+    def cookies_secure(self) -> bool:
+        if self.session_cookie_secure is not None:
+            return self.session_cookie_secure
+        return self.app_env is AppEnvironment.PRODUCTION
+
+    @property
+    def forwarded_allow_ips(self) -> tuple[str, ...]:
+        addresses = tuple(
+            value.strip() for value in self.forwarded_allow_ips_csv.split(",") if value.strip()
+        )
+        for address in addresses:
+            if address == "*":
+                raise ValueError("FORWARDED_ALLOW_IPS must not trust every address")
+            if "/" in address:
+                try:
+                    network = ip_network(address)
+                except ValueError as error:
+                    raise ValueError(
+                        "FORWARDED_ALLOW_IPS must contain only valid IP addresses or CIDRs"
+                    ) from error
+                if network.prefixlen == 0:
+                    raise ValueError("FORWARDED_ALLOW_IPS must not trust every address")
+            else:
+                try:
+                    ip_address(address)
+                except ValueError as error:
+                    raise ValueError(
+                        "FORWARDED_ALLOW_IPS must contain only valid IP addresses or CIDRs"
+                    ) from error
+        return addresses
+
+    @property
+    def is_signup_enabled(self) -> bool:
+        if self.signup_enabled is not None:
+            return self.signup_enabled
+        return self.app_env is not AppEnvironment.PRODUCTION
+
+    @property
+    def session_cookie_name(self) -> str:
+        prefix = f"{COOKIE_PREFIX}-session"
+        return f"__Host-{prefix}" if self.app_env is AppEnvironment.PRODUCTION else prefix
+
+    @property
+    def csrf_cookie_name(self) -> str:
+        prefix = f"{COOKIE_PREFIX}-csrf"
+        return f"__Host-{prefix}" if self.app_env is AppEnvironment.PRODUCTION else prefix
+{% endif %}
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

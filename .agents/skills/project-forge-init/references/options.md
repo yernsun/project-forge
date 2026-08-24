@@ -9,7 +9,8 @@ project-forge init PATH --profile fullstack --auth --default-locale en-US
 project-forge init PATH --name "订单服务" --slug order-service
 ```
 
-Defaults are full-stack, no auth, no event pipeline, sample enabled, and `zh-CN`.
+Defaults are full-stack, no auth, no event pipeline, and `zh-CN`. When `--sample`/`--no-sample` is
+omitted, backend and full-stack projects include the sample while frontend-only projects do not.
 
 After committing the generated baseline:
 
@@ -20,7 +21,16 @@ project-forge enable auth -C PATH
 project-forge enable evented -C PATH
 project-forge enable sample -C PATH
 project-forge update PATH
+project-forge update --check PATH
 ```
 
 `auth` and `evented` require a backend. Additions are monotonic. Updates require a clean Git
 worktree and preserve double-modified files by writing neighboring `.rej` files.
+
+Inspect prerequisites or machine-readable status with:
+
+```bash
+project-forge doctor PATH
+project-forge doctor PATH --json
+project-forge doctor PATH --require-docker
+```

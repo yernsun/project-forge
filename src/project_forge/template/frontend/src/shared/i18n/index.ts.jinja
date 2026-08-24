@@ -1,3 +1,4 @@
+import type { PrimeVueLocaleOptions } from 'primevue/config'
 import { createI18n } from 'vue-i18n'
 
 import enUS from './locales/en-US.json'
@@ -5,12 +6,16 @@ import zhCN from './locales/zh-CN.json'
 
 export const supportedLocales = ['zh-CN', 'en-US'] as const
 export type AppLocale = (typeof supportedLocales)[number]
+type CompletePrimeVueLocale = Required<Omit<PrimeVueLocaleOptions, 'aria'>> & {
+  aria: Required<NonNullable<PrimeVueLocaleOptions['aria']>>
+}
 
 const isLocale = (value: string | null): value is AppLocale =>
   supportedLocales.includes(value as AppLocale)
 
 const persisted = localStorage.getItem('app.locale')
 export const initialLocale: AppLocale = isLocale(persisted) ? persisted : '{{ default_locale }}'
+document.documentElement.lang = initialLocale
 
 export const i18n = createI18n({
   legacy: false,
@@ -19,64 +24,79 @@ export const i18n = createI18n({
   messages: { 'zh-CN': zhCN, 'en-US': enUS },
 })
 
-const commonPrime = {
+const enPrime: CompletePrimeVueLocale = {
   firstDayOfWeek: 1,
   dayNames: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
   dayNamesShort: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
   dayNamesMin: ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'],
   monthNames: ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'],
   monthNamesShort: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
-  today: 'Today',
-  clear: 'Clear',
-  startsWith: 'Starts with',
-  contains: 'Contains',
-  notContains: 'Not contains',
-  endsWith: 'Ends with',
-  equals: 'Equals',
-  notEquals: 'Not equals',
-  noFilter: 'No filter',
-  lt: 'Less than',
-  lte: 'Less than or equal to',
-  gt: 'Greater than',
-  gte: 'Greater than or equal to',
-  dateIs: 'Date is',
-  dateIsNot: 'Date is not',
-  dateBefore: 'Date is before',
-  dateAfter: 'Date is after',
-  apply: 'Apply',
-  matchAll: 'Match all',
-  matchAny: 'Match any',
-  addRule: 'Add rule',
-  removeRule: 'Remove rule',
-  accept: 'Yes',
-  reject: 'No',
-  choose: 'Choose',
-  upload: 'Upload',
-  cancel: 'Cancel',
-  emptyMessage: 'No results found',
-  emptyFilterMessage: 'No results found',
-  aria: { trueLabel: 'True', falseLabel: 'False', nullLabel: 'Not selected' },
+  chooseYear: 'Choose year', chooseMonth: 'Choose month', chooseDate: 'Choose date',
+  prevDecade: 'Previous decade', nextDecade: 'Next decade', prevYear: 'Previous year', nextYear: 'Next year',
+  prevMonth: 'Previous month', nextMonth: 'Next month', prevHour: 'Previous hour', nextHour: 'Next hour',
+  prevMinute: 'Previous minute', nextMinute: 'Next minute', prevSecond: 'Previous second', nextSecond: 'Next second',
+  am: 'am', pm: 'pm', today: 'Today', weekHeader: 'Wk', showMonthAfterYear: false, dateFormat: 'mm/dd/yy', clear: 'Clear',
+  startsWith: 'Starts with', contains: 'Contains', notContains: 'Does not contain', endsWith: 'Ends with',
+  equals: 'Equals', notEquals: 'Does not equal', noFilter: 'No filter', lt: 'Less than',
+  lte: 'Less than or equal to', gt: 'Greater than', gte: 'Greater than or equal to',
+  dateIs: 'Date is', dateIsNot: 'Date is not', dateBefore: 'Date is before', dateAfter: 'Date is after',
+  apply: 'Apply', matchAll: 'Match all', matchAny: 'Match any', addRule: 'Add rule', removeRule: 'Remove rule',
+  accept: 'Yes', reject: 'No', choose: 'Choose', upload: 'Upload', cancel: 'Cancel', completed: 'Completed', pending: 'Pending',
+  weak: 'Weak', medium: 'Medium', strong: 'Strong', passwordPrompt: 'Enter a password',
+  emptyMessage: 'No results found', emptyFilterMessage: 'No matching results', searchMessage: '{0} results are available',
+  selectionMessage: '{0} items selected', emptySelectionMessage: 'No selected item', emptySearchMessage: 'No results found',
+  fileChosenMessage: '{0} files', noFileChosenMessage: 'No file chosen',
+  fileSizeTypes: ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'],
+  aria: {
+    trueLabel: 'True', falseLabel: 'False', nullLabel: 'Not selected', star: '1 star', stars: '{star} stars',
+    selectAll: 'All items selected', unselectAll: 'All items unselected', close: 'Close', previous: 'Previous', next: 'Next',
+    navigation: 'Navigation', scrollTop: 'Scroll top', moveTop: 'Move top', moveUp: 'Move up', moveDown: 'Move down', moveBottom: 'Move bottom',
+    moveToTarget: 'Move to target', moveToSource: 'Move to source', moveAllToTarget: 'Move all to target', moveAllToSource: 'Move all to source',
+    pageLabel: 'Page {page}', firstPageLabel: 'First page', lastPageLabel: 'Last page', nextPageLabel: 'Next page', prevPageLabel: 'Previous page',
+    rowsPerPageLabel: 'Rows per page', jumpToPageDropdownLabel: 'Jump to page dropdown', jumpToPageInputLabel: 'Jump to page input',
+    selectRow: 'Row selected', unselectRow: 'Row unselected', expandRow: 'Row expanded', collapseRow: 'Row collapsed',
+    showFilterMenu: 'Show filter menu', hideFilterMenu: 'Hide filter menu', filterOperator: 'Filter operator', filterConstraint: 'Filter constraint',
+    editRow: 'Edit row', saveEdit: 'Save edit', cancelEdit: 'Cancel edit', listView: 'List view', gridView: 'Grid view',
+    slide: 'Slide', slideNumber: 'Slide {slideNumber}', zoomImage: 'Zoom image', zoomIn: 'Zoom in', zoomOut: 'Zoom out',
+    rotateRight: 'Rotate right', rotateLeft: 'Rotate left', listLabel: 'Option list',
+  },
 }
 
-export const primeLocales = {
-  'en-US': commonPrime,
-  'zh-CN': {
-    ...commonPrime,
-    dayNames: ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'],
-    dayNamesShort: ['周日', '周一', '周二', '周三', '周四', '周五', '周六'],
-    dayNamesMin: ['日', '一', '二', '三', '四', '五', '六'],
-    monthNames: ['一月', '二月', '三月', '四月', '五月', '六月', '七月', '八月', '九月', '十月', '十一月', '十二月'],
-    monthNamesShort: ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'],
-    today: '今天',
-    clear: '清除',
-    apply: '应用',
-    accept: '确定',
-    reject: '取消',
-    choose: '选择',
-    upload: '上传',
-    cancel: '取消',
-    emptyMessage: '暂无数据',
-    emptyFilterMessage: '暂无匹配数据',
-    aria: { trueLabel: '是', falseLabel: '否', nullLabel: '未选择' },
+const zhPrime: CompletePrimeVueLocale = {
+  firstDayOfWeek: 1,
+  dayNames: ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'],
+  dayNamesShort: ['周日', '周一', '周二', '周三', '周四', '周五', '周六'],
+  dayNamesMin: ['日', '一', '二', '三', '四', '五', '六'],
+  monthNames: ['一月', '二月', '三月', '四月', '五月', '六月', '七月', '八月', '九月', '十月', '十一月', '十二月'],
+  monthNamesShort: ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'],
+  chooseYear: '选择年份', chooseMonth: '选择月份', chooseDate: '选择日期',
+  prevDecade: '上一个十年', nextDecade: '下一个十年', prevYear: '上一年', nextYear: '下一年',
+  prevMonth: '上个月', nextMonth: '下个月', prevHour: '上一小时', nextHour: '下一小时',
+  prevMinute: '上一分钟', nextMinute: '下一分钟', prevSecond: '上一秒', nextSecond: '下一秒',
+  am: '上午', pm: '下午', today: '今天', weekHeader: '周', showMonthAfterYear: true, dateFormat: 'yy/mm/dd', clear: '清除',
+  startsWith: '开头为', contains: '包含', notContains: '不包含', endsWith: '结尾为',
+  equals: '等于', notEquals: '不等于', noFilter: '无筛选', lt: '小于', lte: '小于或等于',
+  gt: '大于', gte: '大于或等于', dateIs: '日期为', dateIsNot: '日期不为', dateBefore: '日期早于', dateAfter: '日期晚于',
+  apply: '应用', matchAll: '全部匹配', matchAny: '任一匹配', addRule: '添加规则', removeRule: '删除规则',
+  accept: '确定', reject: '拒绝', choose: '选择', upload: '上传', cancel: '取消', completed: '已完成', pending: '等待中',
+  weak: '弱', medium: '中等', strong: '强', passwordPrompt: '请输入密码',
+  emptyMessage: '暂无数据', emptyFilterMessage: '暂无匹配数据', searchMessage: '找到 {0} 个结果',
+  selectionMessage: '已选择 {0} 项', emptySelectionMessage: '未选择任何项目', emptySearchMessage: '未找到结果',
+  fileChosenMessage: '已选择 {0} 个文件', noFileChosenMessage: '未选择文件',
+  fileSizeTypes: ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'],
+  aria: {
+    trueLabel: '是', falseLabel: '否', nullLabel: '未选择', star: '1 星', stars: '{star} 星',
+    selectAll: '已选择全部项目', unselectAll: '已取消全部选择', close: '关闭', previous: '上一个', next: '下一个',
+    navigation: '导航', scrollTop: '滚动到顶部', moveTop: '移到顶部', moveUp: '上移', moveDown: '下移', moveBottom: '移到底部',
+    moveToTarget: '移到目标', moveToSource: '移回来源', moveAllToTarget: '全部移到目标', moveAllToSource: '全部移回来源',
+    pageLabel: '第 {page} 页', firstPageLabel: '第一页', lastPageLabel: '最后一页', nextPageLabel: '下一页', prevPageLabel: '上一页',
+    rowsPerPageLabel: '每页行数', jumpToPageDropdownLabel: '跳转页下拉框', jumpToPageInputLabel: '输入跳转页码',
+    selectRow: '选择行', unselectRow: '取消选择行', expandRow: '展开行', collapseRow: '折叠行',
+    showFilterMenu: '显示筛选菜单', hideFilterMenu: '隐藏筛选菜单', filterOperator: '筛选运算符', filterConstraint: '筛选条件',
+    editRow: '编辑行', saveEdit: '保存编辑', cancelEdit: '取消编辑', listView: '列表视图', gridView: '网格视图',
+    slide: '幻灯片', slideNumber: '第 {slideNumber} 张幻灯片', zoomImage: '缩放图像', zoomIn: '放大', zoomOut: '缩小',
+    rotateRight: '向右旋转', rotateLeft: '向左旋转', listLabel: '选项列表',
   },
-} as const
+}
+
+export const primeLocales = { 'en-US': enPrime, 'zh-CN': zhPrime } satisfies Record<AppLocale, CompletePrimeVueLocale>

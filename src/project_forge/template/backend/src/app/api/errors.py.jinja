@@ -1,32 +1,109 @@
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import FastAPI, Request, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 
-def install_error_handlers(app: FastAPI) -> None:
-{% if auth %}    from app.auth.service import AuthenticationError
+def _is_auth_related_path(path: str) -> bool:
+    return path == "/api/v1/workspaces" or path.startswith(
+        ("/api/v1/auth/", "/api/v1/workspaces/")
+    )
 
-    @app.exception_handler(AuthenticationError)
-    async def authentication_failed(_: Request, error: AuthenticationError) -> JSONResponse:
+
+def _redact_password_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: (
+                "[redacted]"
+                if "password" in str(key).casefold()
+                else _redact_password_fields(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_redact_password_fields(item) for item in value]
+    return value
+
+
+def _safe_validation_errors(
+    error: RequestValidationError,
+) -> list[dict[str, Any]]:
+    safe_errors: list[dict[str, Any]] = []
+    for detail in error.errors():
+        safe_detail = dict(detail)
+        location = safe_detail.get("loc", ())
+        password_location = isinstance(location, (list, tuple)) and any(
+            isinstance(part, str) and "password" in part.casefold() for part in location
+        )
+        if "input" in safe_detail:
+            safe_detail["input"] = (
+                "[redacted]" if password_location else _redact_password_fields(safe_detail["input"])
+            )
+        safe_errors.append(safe_detail)
+    return safe_errors
+
+
+def install_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_failed(
+        request: Request, error: RequestValidationError
+    ) -> JSONResponse:
+        if _is_auth_related_path(request.url.path):
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                content={
+                    "code": "request_validation_failed",
+                    "message": "request validation failed",
+                },
+                headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+            )
         return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"code": "authentication_failed", "message": str(error)},
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={"detail": jsonable_encoder(_safe_validation_errors(error))},
+        )
+
+{% if auth %}    from app.auth.errors import AuthError
+
+    @app.exception_handler(AuthError)
+    async def authentication_failed(_: Request, error: AuthError) -> JSONResponse:
+        headers = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+        if error.retry_after_seconds is not None:
+            headers["Retry-After"] = str(error.retry_after_seconds)
+        return JSONResponse(
+            status_code=error.status_code,
+            content={"code": error.code, "message": error.public_message},
+            headers=headers,
         )
 
 {% endif %}
 {% if sample %}    from app.services.items import ItemNotFoundError
 
     @app.exception_handler(ItemNotFoundError)
-    async def item_not_found(_: Request, error: ItemNotFoundError) -> JSONResponse:
+    async def item_not_found(request: Request, error: ItemNotFoundError) -> JSONResponse:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
             content={"code": "item_not_found", "message": str(error)},
+{% if auth %}            headers=(
+                {"Cache-Control": "no-store", "Pragma": "no-cache"}
+                if _is_auth_related_path(request.url.path)
+                else None
+            ),
+{% endif %}
         )
 
 {% endif %}    @app.exception_handler(PermissionError)
-    async def permission_denied(_: Request, error: PermissionError) -> JSONResponse:
+    async def permission_denied(request: Request, error: PermissionError) -> JSONResponse:
         return JSONResponse(
             status_code=status.HTTP_403_FORBIDDEN,
             content={"code": "forbidden", "message": str(error)},
+{% if auth %}            headers=(
+                {"Cache-Control": "no-store", "Pragma": "no-cache"}
+                if _is_auth_related_path(request.url.path)
+                else None
+            ),
+{% endif %}
         )

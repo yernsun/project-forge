@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
-from psycopg import sql
+from fastapi import APIRouter, HTTPException, status
 from pydantic import Field
 
+from app.api.dependencies import UnitOfWorkFactoryDep
 from app.api.models import StrictApiModel
+from app.services.health import HealthService
 
 router = APIRouter(prefix="/health", tags=["health"])
 
@@ -19,8 +20,10 @@ async def liveness() -> HealthResponse:
 
 
 @router.get("/ready")
-async def readiness(request: Request) -> HealthResponse:
-    pool = request.app.state.database_pool
-    async with pool.connection() as connection, connection.cursor() as cursor:
-        await cursor.execute(sql.SQL("SELECT 1"))
+async def readiness(unit_of_work_factory: UnitOfWorkFactoryDep) -> HealthResponse:
+    if not await HealthService(unit_of_work_factory).is_ready():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="database is unavailable",
+        )
     return HealthResponse(status="ready")

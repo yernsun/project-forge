@@ -4,6 +4,8 @@ Migrations are immutable nodes with an ID, dependency list, checksum, and one fo
 The runner topologically sorts the DAG, rejects missing dependencies or cycles, verifies checksums
 for applied nodes, and applies pending nodes under a PostgreSQL advisory lock.
 
-There is intentionally no automatic startup migration and no `down` operation. Application startup
-only validates that applied history is known and unmodified. Operators run `app migrate status`,
-`app migrate validate`, and `app migrate up` explicitly.
+There is intentionally no automatic startup migration and no `down` operation. The migration command
+validates applied history before it installs pending nodes. Application startup and readiness require
+that the applied history is known, unmodified, and has no pending nodes, so an instance with an older
+schema never accepts traffic. Operators run `app migrate status`, `app migrate validate`, and
+`app migrate up` explicitly.

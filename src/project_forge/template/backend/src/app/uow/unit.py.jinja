@@ -9,7 +9,8 @@ from psycopg.transaction import AsyncTransaction
 {% if auth %}from app.auth.repository import AuthRepository
 {% endif %}from app.db.types import DbConnection
 {% if evented %}from app.events.repository import OutboxRepository, ProcessedMessageRepository
-{% endif %}{% if sample %}from app.repositories.items import ItemRepository
+{% endif %}from app.repositories.health import HealthRepository
+{% if sample %}from app.repositories.items import ItemRepository
 {% endif %}
 
 class UnitOfWork:
@@ -21,6 +22,7 @@ class UnitOfWork:
         self._owner: asyncio.Task[object] | None = None
         self._entered = False
         self._closed = False
+        self.health: HealthRepository
 {% if sample %}        self.items: ItemRepository
 {% endif %}{% if auth %}        self.auth: AuthRepository
 {% endif %}{% if evented %}        self.outbox: OutboxRepository
@@ -37,6 +39,7 @@ class UnitOfWork:
         self._entered = True
         self._transaction = self._connection.transaction()
         await self._transaction.__aenter__()
+        self.health = HealthRepository(self._connection)
 {% if sample %}        self.items = ItemRepository(self._connection)
 {% endif %}{% if auth %}        self.auth = AuthRepository(self._connection)
 {% endif %}{% if evented %}        self.outbox = OutboxRepository(self._connection)

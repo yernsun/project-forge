@@ -1,36 +1,149 @@
-import createClient from 'openapi-fetch'
+{% if auth or sample %}import createClient{% if auth %}, { type Middleware }{% endif %} from 'openapi-fetch'
 
-import type { components, paths } from './schema'
+import type { paths, components } from './schema'
+{% endif %}
 
-export type ItemDto = components['schemas']['Item']
+{% if auth %}export const AUTH_UNAUTHORIZED_EVENT = 'project-forge:auth-unauthorized'
+{% endif %}
+
+{% if auth %}export type LoginDto = components['schemas']['LoginRequest']
+export type SignupDto = components['schemas']['SignupRequest']
+export type SessionDto = components['schemas']['SessionResponse']
+export type WorkspaceDto = components['schemas']['WorkspaceResponse']
+{% endif %}{% if sample %}export type ItemDto = components['schemas']['ItemResponse']
 export type CreateItemDto = components['schemas']['CreateItemRequest']
+{% endif %}
+export class ApiRequestError extends Error {
+  readonly status: number
+  readonly code: string
+  readonly retryAfter: number | null
 
+  constructor(status: number, code: string, message: string, retryAfter: number | null = null) {
+    super(message)
+    this.name = 'ApiRequestError'
+    this.status = status
+    this.code = code
+    this.retryAfter = retryAfter
+  }
+}
+
+{% if auth %}function cookie(name: string): string | null {
+  const prefix = `${encodeURIComponent(name)}=`
+  const entry = document.cookie.split(';').map((value) => value.trim()).find((value) => value.startsWith(prefix))
+  return entry ? decodeURIComponent(entry.slice(prefix.length)) : null
+}
+
+export function readCsrfToken(): string | null {
+  return cookie('__Host-{{ project_slug }}-csrf') ?? cookie('{{ project_slug }}-csrf')
+}
+{% endif %}
+
+{% if auth or sample %}type ApiErrorDetails = Pick<ApiRequestError, 'code' | 'message'>
+
+function errorDetails(value: unknown): ApiErrorDetails | null {
+  if (typeof value !== 'object' || value === null) return null
+  const candidate = value as Partial<ApiErrorDetails>
+  return typeof candidate.code === 'string' && typeof candidate.message === 'string'
+    ? { code: candidate.code, message: candidate.message }
+    : null
+}
+
+function requestError(response: Response, error: unknown, fallbackCode: string): ApiRequestError {
+  const details = errorDetails(error)
+  const retryAfter = Number.parseInt(response.headers.get('Retry-After') ?? '', 10)
+  return new ApiRequestError(
+    response.status,
+    details?.code ?? fallbackCode,
+    details?.message ?? fallbackCode,
+    Number.isFinite(retryAfter) ? retryAfter : null,
+  )
+}
+
+{% endif %}
+{% if auth or sample %}const configuredBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '') || window.location.origin
 const client = createClient<paths>({
-  baseUrl: import.meta.env.VITE_API_BASE_URL ?? '',
+  baseUrl: configuredBaseUrl,
   credentials: 'include',
+  fetch: (request) => globalThis.fetch(request),
 })
+{% endif %}
 
-export async function listItems(workspaceId?: string): Promise<ItemDto[]> {
+{% if auth %}const sessionMiddleware: Middleware = {
+  async onRequest({ request }) {
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)) {
+      const token = readCsrfToken()
+      if (token && !request.headers.has('X-CSRF-Token')) request.headers.set('X-CSRF-Token', token)
+    }
+    return request
+  },
+  async onResponse({ response }) {
+    if (response.status === 401) window.dispatchEvent(new CustomEvent(AUTH_UNAUTHORIZED_EVENT))
+    return response
+  },
+}
+
+client.use(sessionMiddleware)
+{% endif %}
+
+{% if auth %}export async function signup(input: SignupDto): Promise<SessionDto> {
+  const { data, error, response } = await client.POST('/api/v1/auth/signup', { body: input })
+  if (error || !data) throw requestError(response, error, 'signup_failed')
+  return data
+}
+
+export async function login(input: LoginDto): Promise<SessionDto> {
+  const { data, error, response } = await client.POST('/api/v1/auth/login', { body: input })
+  if (error || !data) throw requestError(response, error, 'login_failed')
+  return data
+}
+
+export async function getSession(): Promise<SessionDto | null> {
+  const { data, error, response } = await client.GET('/api/v1/auth/session')
+  if (response.status === 401) return null
+  if (error || !data) throw requestError(response, error, 'session_failed')
+  return data
+}
+
+export async function logout(): Promise<void> {
+  const { error, response } = await client.POST('/api/v1/auth/logout')
+  if (error) throw requestError(response, error, 'logout_failed')
+}
+
+export async function listWorkspaces(): Promise<WorkspaceDto[]> {
+  const { data, error, response } = await client.GET('/api/v1/workspaces')
+  if (error || !data) throw requestError(response, error, 'workspaces_failed')
+  return data.workspaces
+}
+
+export async function createWorkspace(name: string): Promise<WorkspaceDto> {
+  const { data, error, response } = await client.POST('/api/v1/workspaces', {
+    body: { name },
+  })
+  if (error || !data) throw requestError(response, error, 'workspace_create_failed')
+  return data
+}
+{% endif %}{% if sample %}export async function listItems(workspaceId?: string): Promise<ItemDto[]> {
 {% if auth %}  if (!workspaceId) return []
-  const { data, error } = await client.GET('/api/v1/workspaces/{workspaceId}/items', {
+  const { data, error, response } = await client.GET('/api/v1/workspaces/{workspaceId}/items', {
     params: { path: { workspaceId }, query: { limit: 100 } },
   })
 {% else %}  void workspaceId
-  const { data, error } = await client.GET('/api/v1/items', {
+  const { data, error, response } = await client.GET('/api/v1/items', {
     params: { query: { limit: 100 } },
   })
-{% endif %}  if (error || !data) throw new Error('items request failed')
+{% endif %}  if (error || !data) throw requestError(response, error, 'items_failed')
   return data.items
 }
 
 export async function createItem(input: CreateItemDto, workspaceId?: string): Promise<ItemDto> {
-{% if auth %}  if (!workspaceId) throw new Error('workspace ID is required')
-  const { data, error } = await client.POST('/api/v1/workspaces/{workspaceId}/items', {
+{% if auth %}  if (!workspaceId) throw new ApiRequestError(400, 'workspace_required', 'Workspace is required')
+  const { data, error, response } = await client.POST('/api/v1/workspaces/{workspaceId}/items', {
     params: { path: { workspaceId } },
     body: input,
   })
 {% else %}  void workspaceId
-  const { data, error } = await client.POST('/api/v1/items', { body: input })
-{% endif %}  if (error || !data) throw new Error('create item request failed')
+  const { data, error, response } = await client.POST('/api/v1/items', { body: input })
+{% endif %}  if (error || !data) throw requestError(response, error, 'item_create_failed')
   return data
 }
+{% endif %}

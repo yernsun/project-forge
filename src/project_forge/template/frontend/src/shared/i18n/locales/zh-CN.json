@@ -1,27 +1,61 @@
 {
+  "locales": { "zh-CN": "简体中文", "en-US": "English" },
   "app": {
     "title": "应用工作台",
     "subtitle": "由可组合的工程能力初始化",
     "language": "语言",
-    "ready": "基础工程已就绪"
+    "ready": "基础工程已就绪",
+    "retry": "重试"
   },
   "items": {
     "title": "条目",
     "name": "名称",
     "description": "说明",
     "status": "状态",
+    "statuses": { "active": "启用", "archived": "已归档" },
     "createdAt": "创建时间",
     "create": "新建条目",
     "refresh": "刷新",
     "empty": "暂无条目",
-    "workspaceId": "工作区 ID",
-    "loadError": "加载条目失败"
+    "chooseWorkspace": "请先选择工作区，再加载条目。",
+    "loadError": "加载条目失败",
+    "createError": "创建条目失败"
   },
   "auth": {
-    "title": "登录",
+    "eyebrow": "安全工作区",
+    "mode": "认证方式",
+    "loginTitle": "欢迎回来",
+    "signupTitle": "创建账户",
     "email": "邮箱",
     "password": "密码",
     "login": "登录",
-    "loginError": "登录失败"
+    "signup": "注册",
+    "workspaceName": "初始工作区",
+    "passwordPrompt": "请输入至少 12 个字符",
+    "passwordWeak": "弱",
+    "passwordMedium": "中等",
+    "passwordStrong": "强",
+    "restoringSession": "正在恢复会话…",
+    "signedInAs": "当前账户",
+    "workspace": "工作区",
+    "selectWorkspace": "选择工作区",
+    "newWorkspace": "新工作区名称",
+    "createWorkspace": "创建工作区",
+    "logout": "退出登录",
+    "errors": {
+      "authentication_required": "请先登录后继续。",
+      "invalid_credentials": "邮箱或密码不正确。",
+      "invalid_or_expired_session": "会话已失效，请重新登录。",
+      "email_already_exists": "该邮箱已注册账户。",
+      "origin_not_allowed": "当前应用来源未获授权。",
+      "signup_disabled": "当前未开放账户注册。",
+      "auth_rate_limited": "尝试次数过多，请在 {seconds} 秒后重试。",
+      "request_validation_failed": "请检查提交内容后重试。",
+      "csrf_failed": "安全令牌已过期，请刷新页面后重试。",
+      "workspace_access_denied": "你无权访问该工作区。",
+      "session_failed": "认证服务暂时不可用。",
+      "workspaces_failed": "加载工作区失败。",
+      "unavailable": "请求未能完成，请重试。"
+    }
   }
 }

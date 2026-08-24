@@ -1,0 +1,390 @@
+{% if auth %}from __future__ import annotations
+
+import os
+from datetime import timedelta
+from uuid import uuid4
+
+import pytest
+from psycopg import sql
+{% if sample %}from psycopg.errors import ForeignKeyViolation
+{% endif %}
+from app.auth.errors import (
+    AuthRateLimitedError,
+    EmailAlreadyExistsError,
+    InvalidCredentialsError,
+    InvalidSessionError,
+)
+from app.auth.repository import AuthRepository
+from app.auth.service import AuthService
+from app.db.migration_engine import MigrationRunner
+from app.db.migrations.auth import AUTH
+{% if sample %}from app.db.migrations.auth_items import AUTH_ITEMS
+{% endif %}from app.db.migrations.auth_security import AUTH_SECURITY
+from app.db.migrations.core import CORE
+{% if sample %}from app.db.migrations.items import ITEMS
+{% endif %}from app.db.pool import create_pool
+from app.db.registry import MIGRATIONS
+from app.db.types import DbPool
+from app.domain.base import utc_now
+from app.settings import Settings
+from app.uow.factory import UnitOfWorkFactory
+
+
+async def _rate_limit_row_count(pool: DbPool, scope: str) -> int:
+    async with pool.connection() as connection:
+        cursor = await connection.execute(
+            sql.SQL("SELECT count(*) AS count FROM auth_rate_limits WHERE scope = %(scope)s"),
+            {"scope": scope},
+        )
+        row = await cursor.fetchone()
+    if row is None:
+        raise RuntimeError("rate-limit row count query returned no row")
+    return int(row["count"])
+
+
+@pytest.mark.asyncio
+async def test_postgres_auth_lifecycle_and_constraints() -> None:
+    if os.getenv("PROJECT_FORGE_DESTRUCTIVE_PG_TESTS") != "1":
+        pytest.skip(
+            "set PROJECT_FORGE_DESTRUCTIVE_PG_TESTS=1 only for a dedicated PostgreSQL database"
+        )
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("set TEST_DATABASE_URL to a dedicated PostgreSQL database")
+
+    pool = create_pool(database_url)
+    await pool.open()
+    try:
+        async with pool.connection() as connection:
+            await MigrationRunner(connection, MIGRATIONS).up()
+            async with connection.transaction(), connection.cursor() as cursor:
+                await cursor.execute(
+                    sql.SQL(
+                        "TRUNCATE users, workspaces, auth_rate_limits "
+                        "RESTART IDENTITY CASCADE"
+                    )
+                )
+
+        settings = Settings(
+            app_env="test",
+            database_url=database_url,
+            signup_enabled=True,
+            auth_rate_limit_secret="integration-test-rate-limit-secret",
+            auth_login_email_ip_limit=100,
+            auth_login_ip_limit=100,
+            auth_signup_ip_limit=100,
+        )
+        service = AuthService(UnitOfWorkFactory(pool), settings)
+        issued = await service.signup(
+            "Person@Example.com",
+            "  correct horse battery staple  ",
+            "Example",
+            "integration-client",
+        )
+        resolved = await service.resolve(issued.session_token.get_secret_value())
+        assert resolved.user_id == issued.principal.user_id
+        assert str(resolved.email) == "person@example.com"
+        owned_workspaces = await service.list_workspaces(resolved.user_id)
+        assert len(owned_workspaces) == 1
+
+        with pytest.raises(InvalidCredentialsError):
+            await service.login("person@example.com", "wrong password", "integration-client")
+        relogged = await service.login(
+            "person@example.com",
+            "  correct horse battery staple  ",
+            "integration-client",
+        )
+        assert relogged.principal.user_id == resolved.user_id
+
+        other = await service.signup(
+            "other@example.com",
+            "another correct horse battery staple",
+            "Other",
+            "other-integration-client",
+        )
+        async with UnitOfWorkFactory(pool)() as unit_of_work:
+            assert await unit_of_work.auth.is_workspace_member(
+                resolved.user_id, owned_workspaces[0].workspace_id
+            )
+            assert not await unit_of_work.auth.is_workspace_member(
+                other.principal.user_id, owned_workspaces[0].workspace_id
+            )
+
+        with pytest.raises(EmailAlreadyExistsError):
+            await service.signup(
+                "PERSON@example.com",
+                "another correct horse battery staple",
+                "Duplicate",
+                "integration-client",
+            )
+
+        limited_settings = Settings(
+            app_env="test",
+            database_url=database_url,
+            auth_rate_limit_secret="shared-integration-rate-limit-secret",
+            auth_login_email_ip_limit=1,
+            auth_login_ip_limit=100,
+        )
+        first_instance = AuthService(UnitOfWorkFactory(pool), limited_settings)
+        second_instance = AuthService(UnitOfWorkFactory(pool), limited_settings)
+        with pytest.raises(InvalidCredentialsError):
+            await first_instance.login(
+                "missing-rate-limit@example.com", "wrong password", "shared-client"
+            )
+        with pytest.raises(AuthRateLimitedError):
+            await second_instance.login(
+                "missing-rate-limit@example.com", "wrong password", "shared-client"
+            )
+
+        ip_first_settings = Settings(
+            app_env="test",
+            database_url=database_url,
+            auth_rate_limit_secret="ip-first-integration-rate-limit-secret",
+            auth_login_email_ip_limit=100,
+            auth_login_ip_limit=1,
+        )
+        ip_first_service = AuthService(UnitOfWorkFactory(pool), ip_first_settings)
+        email_rows_before = await _rate_limit_row_count(pool, "login:email_ip")
+        with pytest.raises(InvalidCredentialsError):
+            await ip_first_service.login(
+                "first-ip-target@example.com", "wrong password", "ip-first-client"
+            )
+        email_rows_after_first = await _rate_limit_row_count(pool, "login:email_ip")
+        assert email_rows_after_first == email_rows_before + 1
+        with pytest.raises(AuthRateLimitedError):
+            await ip_first_service.login(
+                "second-ip-target@example.com", "wrong password", "ip-first-client"
+            )
+        assert await _rate_limit_row_count(pool, "login:email_ip") == email_rows_after_first
+
+        await service.logout(relogged.principal)
+        with pytest.raises(InvalidSessionError):
+            await service.resolve(relogged.session_token.get_secret_value())
+
+        async with UnitOfWorkFactory(pool)() as unit_of_work:
+            sessions, rate_limits = await unit_of_work.auth.purge_expired(
+                utc_now() + timedelta(seconds=settings.session_ttl_seconds + 1)
+            )
+        assert sessions == 2
+        assert rate_limits > 0
+        with pytest.raises(InvalidSessionError):
+            await service.resolve(issued.session_token.get_secret_value())
+        async with pool.connection() as connection:
+            assert await AuthRepository(connection).resolve_session(
+                "not-a-real-token-hash", utc_now()
+            ) is None
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_auth_security_migration_upgrades_existing_auth_data() -> None:
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("set TEST_DATABASE_URL to a dedicated PostgreSQL database")
+
+    schema_name = f"auth_upgrade_{uuid4().hex}"
+    pool = create_pool(database_url)
+    await pool.open()
+    try:
+        async with pool.connection() as connection:
+            try:
+                await connection.execute(
+                    sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema_name))
+                )
+                await connection.commit()
+                await connection.execute(
+                    sql.SQL("SET search_path TO {}").format(sql.Identifier(schema_name))
+                )
+                await connection.commit()
+
+                assert await MigrationRunner(connection, (CORE, AUTH)).up() == (
+                    "0001_core",
+                    "0020_auth",
+                )
+                user_id = uuid4()
+                created_at = utc_now()
+                await connection.execute(
+                    sql.SQL(
+                        "INSERT INTO users (user_id, email, password_hash, created_at) "
+                        "VALUES (%(user_id)s, %(email)s, %(password_hash)s, %(created_at)s)"
+                    ),
+                    {
+                        "user_id": user_id,
+                        "email": "legacy@example.com",
+                        "password_hash": "legacy-hash",
+                        "created_at": created_at,
+                    },
+                )
+                await connection.commit()
+
+                assert await MigrationRunner(
+                    connection, (CORE, AUTH, AUTH_SECURITY)
+                ).up() == ("0021_auth_security",)
+                cursor = await connection.execute(
+                    sql.SQL(
+                        "SELECT status, version, updated_at, password_updated_at "
+                        "FROM users WHERE user_id = %(user_id)s"
+                    ),
+                    {"user_id": user_id},
+                )
+                user = await cursor.fetchone()
+                assert user is not None
+                assert user["status"] == "ACTIVE"
+                assert user["version"] == 1
+                assert user["updated_at"] == created_at
+                assert user["password_updated_at"] == created_at
+
+                cursor = await connection.execute(
+                    sql.SQL(
+                        "SELECT to_regclass('auth_rate_limits') AS limiter, "
+                        "to_regclass('idx_sessions_expires_at') AS expiry_index, "
+                        "to_regclass('idx_workspace_members_user_workspace') AS member_index"
+                    )
+                )
+                security_objects = await cursor.fetchone()
+                assert security_objects is not None
+                assert security_objects["limiter"] is not None
+                assert security_objects["expiry_index"] is not None
+                assert security_objects["member_index"] is not None
+            finally:
+                await connection.rollback()
+                await connection.execute(sql.SQL("SET search_path TO public"))
+                await connection.execute(
+                    sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                        sql.Identifier(schema_name)
+                    )
+                )
+                await connection.commit()
+    finally:
+        await pool.close()
+
+
+{% if sample %}@pytest.mark.asyncio
+async def test_auth_items_migration_preserves_legacy_rows_and_enforces_new_writes() -> None:
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("set TEST_DATABASE_URL to a dedicated PostgreSQL database")
+
+    schema_name = f"auth_items_upgrade_{uuid4().hex}"
+    pool = create_pool(database_url)
+    await pool.open()
+    try:
+        async with pool.connection() as connection:
+            try:
+                await connection.execute(
+                    sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema_name))
+                )
+                await connection.commit()
+                await connection.execute(
+                    sql.SQL("SET search_path TO {}").format(sql.Identifier(schema_name))
+                )
+                await connection.commit()
+
+                base_migrations = (CORE, ITEMS, AUTH, AUTH_SECURITY)
+                assert await MigrationRunner(connection, base_migrations).up() == (
+                    "0001_core",
+                    "0010_items",
+                    "0020_auth",
+                    "0021_auth_security",
+                )
+                now = utc_now()
+                null_item_id = uuid4()
+                orphan_item_id = uuid4()
+                orphan_workspace_id = uuid4()
+                for item_id, workspace_id, name in (
+                    (null_item_id, None, "legacy-null"),
+                    (orphan_item_id, orphan_workspace_id, "legacy-orphan"),
+                ):
+                    await connection.execute(
+                        sql.SQL(
+                            "INSERT INTO items ("
+                            "item_id, workspace_id, name, description, status, version, "
+                            "created_at, updated_at"
+                            ") VALUES ("
+                            "%(item_id)s, %(workspace_id)s, %(name)s, NULL, 'ACTIVE', 1, "
+                            "%(now)s, %(now)s)"
+                        ),
+                        {
+                            "item_id": item_id,
+                            "workspace_id": workspace_id,
+                            "name": name,
+                            "now": now,
+                        },
+                    )
+                await connection.commit()
+
+                assert await MigrationRunner(
+                    connection, (*base_migrations, AUTH_ITEMS)
+                ).up() == ("0022_auth_items",)
+                cursor = await connection.execute(
+                    sql.SQL(
+                        "SELECT convalidated FROM pg_constraint "
+                        "WHERE conrelid = 'items'::regclass AND conname = 'fk_items_workspace'"
+                    )
+                )
+                constraint = await cursor.fetchone()
+                assert constraint is not None
+                assert constraint["convalidated"] is False
+
+                with pytest.raises(ForeignKeyViolation):
+                    async with connection.transaction():
+                        await connection.execute(
+                            sql.SQL(
+                                "INSERT INTO items ("
+                                "item_id, workspace_id, name, description, status, version, "
+                                "created_at, updated_at"
+                                ") VALUES ("
+                                "%(item_id)s, %(workspace_id)s, 'new-orphan', NULL, "
+                                "'ACTIVE', 1, %(now)s, %(now)s)"
+                            ),
+                            {
+                                "item_id": uuid4(),
+                                "workspace_id": uuid4(),
+                                "now": now,
+                            },
+                        )
+
+                await connection.execute(
+                    sql.SQL(
+                        "INSERT INTO workspaces (workspace_id, name, created_at) "
+                        "VALUES (%(workspace_id)s, 'repaired legacy workspace', %(now)s)"
+                    ),
+                    {"workspace_id": orphan_workspace_id, "now": now},
+                )
+                await connection.execute(
+                    sql.SQL("ALTER TABLE items VALIDATE CONSTRAINT fk_items_workspace")
+                )
+                cursor = await connection.execute(
+                    sql.SQL(
+                        "SELECT convalidated FROM pg_constraint "
+                        "WHERE conrelid = 'items'::regclass AND conname = 'fk_items_workspace'"
+                    )
+                )
+                validated = await cursor.fetchone()
+                assert validated is not None
+                assert validated["convalidated"] is True
+                cursor = await connection.execute(
+                    sql.SQL(
+                        "SELECT workspace_id FROM items WHERE item_id = %(item_id)s"
+                    ),
+                    {"item_id": null_item_id},
+                )
+                null_row = await cursor.fetchone()
+                assert null_row is not None
+                assert null_row["workspace_id"] is None
+            finally:
+                await connection.rollback()
+                await connection.execute(sql.SQL("SET search_path TO public"))
+                await connection.execute(
+                    sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                        sql.Identifier(schema_name)
+                    )
+                )
+                await connection.commit()
+    finally:
+        await pool.close()
+{% endif %}
+{% else %}def test_auth_postgres_is_not_emitted_without_auth() -> None:
+    assert True
+{% endif %}

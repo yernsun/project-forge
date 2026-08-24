@@ -3,17 +3,24 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-
+{% if auth -%}
+from typing import Annotated
+{% endif %}
 import typer
 
-from app.db.migration_engine import MigrationRunner
+{% if auth %}from app.auth.service import AuthService
+{% endif %}from app.db.migration_engine import MigrationRunner
 from app.db.pool import create_pool
 from app.db.registry import MIGRATIONS
 from app.settings import get_settings
-
+{% if auth %}from app.uow.factory import UnitOfWorkFactory
+{% endif %}
 app = typer.Typer(no_args_is_help=True)
 migrate = typer.Typer(help="Manage the immutable migration DAG")
 app.add_typer(migrate, name="migrate")
+{% if auth %}auth = typer.Typer(help="Operate authentication persistence")
+app.add_typer(auth, name="auth")
+{% endif %}
 
 
 @asynccontextmanager
@@ -58,5 +65,29 @@ def migration_up() -> None:
     typer.echo("applied: " + (", ".join(applied) if applied else "none"))
 
 
-def main() -> None:
+{% if auth %}@auth.command("purge-expired")
+def auth_purge_expired(
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Count expired rows without deleting them"),
+    ] = False,
+) -> None:
+    """Delete expired sessions and fixed-window rate-limit rows."""
+
+    async def run() -> tuple[int, int]:
+        settings = get_settings()
+        pool = create_pool(settings.database_url)
+        await pool.open()
+        try:
+            service = AuthService(UnitOfWorkFactory(pool), settings)
+            return await service.purge_expired(dry_run=dry_run)
+        finally:
+            await pool.close()
+
+    sessions, rate_limits = asyncio.run(run())
+    action = "would_purge" if dry_run else "purged"
+    typer.echo(f"{action} sessions={sessions} rate_limits={rate_limits}")
+
+
+{% endif %}def main() -> None:
     app()

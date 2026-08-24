@@ -32,11 +32,14 @@ services:
     build:
       context: ./backend
     environment: &backend-env
-      DATABASE_URL: postgresql://app:${POSTGRES_PASSWORD}@db:5432/app
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL with percent-encoded credentials}
       APP_ENV: production
-      APP_ALLOWED_ORIGINS: ${APP_ALLOWED_ORIGINS:?set APP_ALLOWED_ORIGINS}
+{% if auth %}      APP_ALLOWED_ORIGINS: ${APP_ALLOWED_ORIGINS:?set APP_ALLOWED_ORIGINS}
       APP_SESSION_COOKIE_SECURE: "true"
-{% if evented %}      REDIS_URL: redis://redis:6379/0
+      APP_AUTH_RATE_LIMIT_SECRET: ${APP_AUTH_RATE_LIMIT_SECRET:?set APP_AUTH_RATE_LIMIT_SECRET to at least 32 random bytes}
+      APP_SIGNUP_ENABLED: ${APP_SIGNUP_ENABLED:-false}
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:?set trusted gateway and proxy IPs or CIDRs; never use *}
+{% endif %}{% if evented %}      REDIS_URL: redis://redis:6379/0
 {% endif %}    command: ["app", "migrate", "up"]
     depends_on:
       db:
@@ -73,28 +76,41 @@ services:
 {% endif %}{% endif %}{% if profile != 'backend' %}  web:
     build:
       context: ./frontend
+      args:
+        VITE_API_BASE_URL: ""
     restart: unless-stopped
 
 {% endif %}  gateway:
     image: nginx:1.27-alpine
     restart: unless-stopped
+    environment:
+      NGINX_ENVSUBST_FILTER: ^API_UPSTREAM$
+{% if profile != 'frontend' %}      API_UPSTREAM: http://api:8000
+{% elif sample %}      API_UPSTREAM: ${FRONTEND_API_UPSTREAM:?set FRONTEND_API_UPSTREAM for the sample API}
+{% endif %}    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
-      - "8080:8080"
+      - "${APP_BIND_HOST:-127.0.0.1}:8080:80"
     volumes:
-      - ./infra/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
-{% if profile != 'frontend' %}    depends_on:
+      - ./infra/nginx/default.conf:/etc/nginx/templates/default.conf.template:ro
+{% if profile == 'fullstack' %}    depends_on:
       api:
         condition: service_healthy
-{% elif profile != 'backend' %}    depends_on:
+      web:
+        condition: service_started
+{% elif profile == 'backend' %}    depends_on:
+      api:
+        condition: service_healthy
+{% else %}    depends_on:
       web:
         condition: service_started
 {% endif %}    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/healthz"]
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:80/healthz"]
       interval: 10s
       timeout: 3s
       retries: 10
 
-volumes:
-{% if profile != 'frontend' %}  postgres-data:
+{% if profile != 'frontend' %}volumes:
+  postgres-data:
 {% if evented %}  redis-data:
 {% endif %}{% endif %}

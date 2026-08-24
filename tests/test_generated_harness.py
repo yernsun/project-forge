@@ -1,0 +1,402 @@
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+from textwrap import dedent
+
+import pytest
+import yaml
+
+from project_forge.config import Profile, ProjectState
+from project_forge.renderer import render_fresh
+
+ROOT = Path(__file__).resolve().parents[1]
+
+REPRESENTATIVE_STATES = (
+    ProjectState.create("Frontend Minimal", profile=Profile.FRONTEND, sample=False),
+    ProjectState.create("Frontend Sample", profile=Profile.FRONTEND, sample=True),
+    ProjectState.create("Backend Minimal", profile=Profile.BACKEND, sample=False),
+    ProjectState.create(
+        "Fullstack Auth Sample",
+        profile=Profile.FULLSTACK,
+        auth=True,
+        sample=True,
+    ),
+    ProjectState.create(
+        "Fullstack Auth Evented",
+        profile=Profile.FULLSTACK,
+        auth=True,
+        evented=True,
+        sample=False,
+    ),
+)
+
+
+@pytest.mark.parametrize("state", REPRESENTATIVE_STATES, ids=lambda state: state.project_slug)
+def test_static_generated_harnesses_pass(state: ProjectState, tmp_path: Path) -> None:
+    destination = tmp_path / "project"
+    render_fresh(state, destination)
+    for script in ("check_architecture.py", "check_sql.py", "check_i18n.py"):
+        subprocess.run(
+            [sys.executable, f"harness/{script}"],
+            cwd=destination,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    workflow = yaml.safe_load(
+        (destination / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    )
+    validate = workflow["jobs"]["validate"]
+    services = validate.get("services", {})
+    if state.has_backend:
+        assert services["postgres"]["image"] == "postgres:16-alpine"
+    else:
+        assert "postgres" not in services
+    if state.evented:
+        assert services["redis"]["image"] == "redis:7-alpine"
+    else:
+        assert "redis" not in services
+    environment = validate.get("env", {})
+    if state.auth:
+        assert environment["PROJECT_FORGE_DESTRUCTIVE_PG_TESTS"] == "1"
+    else:
+        assert "PROJECT_FORGE_DESTRUCTIVE_PG_TESTS" not in environment
+    if state.profile is Profile.FRONTEND and state.sample:
+        assert (
+            environment["FRONTEND_API_UPSTREAM"]
+            == "http://host.docker.internal:8000"
+        )
+    else:
+        assert "FRONTEND_API_UPSTREAM" not in environment
+
+    node_steps = [
+        step
+        for step in validate["steps"]
+        if step.get("uses") == "actions/setup-node@v4"
+    ]
+    if state.has_frontend:
+        assert node_steps and all(step["with"]["node-version"] == "22" for step in node_steps)
+    else:
+        assert not node_steps
+
+    emits_auth_e2e = state.profile is Profile.FULLSTACK and state.auth and state.sample
+    assert ("auth-compose-e2e" in workflow["jobs"]) is emits_auth_e2e
+    if emits_auth_e2e:
+        e2e = workflow["jobs"]["auth-compose-e2e"]
+        assert e2e["needs"] == "validate"
+        assert "services" not in e2e
+        commands = "\n".join(str(step.get("run", "")) for step in e2e["steps"])
+        assert "docker compose -f docker-compose.dev.yml up -d --build" in commands
+        assert "http://localhost:5173/health/ready" in commands
+        assert "npm run e2e:install" in commands
+        assert "npm run e2e" in commands
+        assert "docker compose -f docker-compose.dev.yml logs" in commands
+        assert "docker compose -f docker-compose.dev.yml down --volumes" in commands
+        cleanup = [step for step in e2e["steps"] if step.get("if") == "always()"]
+        assert {step["name"] for step in cleanup} == {
+            "Show Compose logs",
+            "Stop Compose stack",
+        }
+
+
+def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    quality = workflow["jobs"]["generator-quality"]
+    node_steps = [step for step in quality["steps"] if step.get("uses") == "actions/setup-node@v4"]
+    assert node_steps[0]["with"]["node-version"] == "22"
+    quality_commands = "\n".join(str(step.get("run", "")) for step in quality["steps"])
+    assert "harness/manage_openapi_contracts.py --check" in quality_commands
+
+    generated = workflow["jobs"]["generated-projects"]
+    assert generated["services"]["postgres"]["image"] == "postgres:16-alpine"
+    assert generated["env"]["PROJECT_FORGE_DESTRUCTIVE_PG_TESTS"] == "1"
+    assert (
+        generated["env"]["FRONTEND_API_UPSTREAM"]
+        == "http://host.docker.internal:8000"
+    )
+    matrix = {entry["name"]: entry for entry in generated["strategy"]["matrix"]["include"]}
+    assert matrix["frontend-sample"]["arguments"] == "--profile frontend --sample"
+    generated_node_steps = [
+        step
+        for step in generated["steps"]
+        if step.get("uses") == "actions/setup-node@v4"
+    ]
+    assert generated_node_steps[0]["with"]["node-version"] == "22"
+    steps = "\n".join(str(step.get("run", "")) for step in generated["steps"])
+    assert "uv sync --frozen --all-groups" in steps
+    assert "uv run --frozen --no-sync app migrate up" in steps
+    e2e = workflow["jobs"]["fullstack-auth-compose-e2e"]
+    e2e_node_steps = [
+        step for step in e2e["steps"] if step.get("uses") == "actions/setup-node@v4"
+    ]
+    assert e2e_node_steps[0]["with"]["node-version"] == "22"
+    e2e_steps = "\n".join(str(step.get("run", "")) for step in e2e["steps"])
+    assert "--profile fullstack --auth --sample --no-git" in e2e_steps
+    assert "docker compose -f docker-compose.dev.yml up -d --build" in e2e_steps
+    assert "npm run e2e" in e2e_steps
+
+
+def test_architecture_harness_rejects_boundary_bypasses(tmp_path: Path) -> None:
+    destination = tmp_path / "project"
+    render_fresh(
+        ProjectState.create(
+            "Architecture Guard",
+            profile=Profile.BACKEND,
+            auth=True,
+            sample=True,
+        ),
+        destination,
+    )
+    app_source = destination / "backend/src/app"
+
+    allowed = app_source / "api/allowed_factory.py"
+    allowed.write_text(
+        dedent(
+            """
+            from app.api.dependencies import UnitOfWorkFactoryDep
+            from app.services.health import HealthService
+
+            async def endpoint(factory: UnitOfWorkFactoryDep) -> bool:
+                return await HealthService(factory).is_ready()
+            """
+        ),
+        encoding="utf-8",
+    )
+    accepted = subprocess.run(
+        [sys.executable, "harness/check_architecture.py"],
+        cwd=destination,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert accepted.returncode == 0, accepted.stderr
+    allowed.unlink()
+
+    cases = (
+        (
+            "relative-service-repository",
+            "services/forbidden_relative.py",
+            """
+            from ..repositories.items import ItemRepository
+
+            repository_type = ItemRepository
+            """,
+            "service cannot import app.repositories.items",
+        ),
+        (
+            "relative-domain-service",
+            "domain/forbidden_relative.py",
+            """
+            from ..services.health import HealthService
+
+            service_type = HealthService
+            """,
+            "domain cannot import app.services.health",
+        ),
+        (
+            "relative-api-repository",
+            "api/forbidden_relative.py",
+            """
+            from ..repositories.health import HealthRepository
+
+            repository_type = HealthRepository
+            """,
+            "API cannot import infrastructure module app.repositories.health",
+        ),
+        (
+            "sql-module-alias",
+            "services/forbidden_sql_alias.py",
+            """
+            from psycopg import sql as pg_sql
+
+            query = pg_sql.SQL("SELECT 1")
+            """,
+            "SQL composition belongs in a repository or db adapter",
+        ),
+        (
+            "sql-constructor-alias",
+            "services/forbidden_sql_constructor.py",
+            """
+            from psycopg.sql import Identifier as Column
+
+            column = Column("item_id")
+            """,
+            "SQL composition belongs in a repository or db adapter",
+        ),
+        (
+            "api-factory-call",
+            "api/forbidden_factory.py",
+            """
+            from app.api.dependencies import UnitOfWorkFactoryDep as FactoryDep
+
+            async def endpoint(factory: FactoryDep) -> object:
+                return factory()
+            """,
+            "API cannot call UnitOfWorkFactoryDep directly",
+        ),
+        (
+            "api-unit-of-work-entry",
+            "api/forbidden_uow.py",
+            """
+            from app.api.dependencies import UnitOfWorkFactoryDep
+
+            async def endpoint(factory: UnitOfWorkFactoryDep) -> object:
+                async with factory() as unit_of_work:
+                    return unit_of_work.items
+            """,
+            "API cannot enter a unit of work directly",
+        ),
+        (
+            "api-repository-access",
+            "api/forbidden_repository_access.py",
+            """
+            from app.api.dependencies import UnitOfWorkFactoryDep
+
+            async def endpoint(factory: UnitOfWorkFactoryDep) -> object:
+                async with factory() as unit_of_work:
+                    return unit_of_work.items
+            """,
+            "API cannot access repositories through a unit of work",
+        ),
+    )
+
+    for name, relative, source, expected in cases:
+        violation = app_source / relative
+        violation.write_text(dedent(source), encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, "harness/check_architecture.py"],
+            cwd=destination,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        violation.unlink()
+        assert result.returncode == 1, f"{name} unexpectedly passed"
+        assert expected in result.stderr, f"{name}: {result.stderr}"
+
+
+def test_sql_harness_rejects_dynamic_composition_bypasses(tmp_path: Path) -> None:
+    destination = tmp_path / "project"
+    render_fresh(
+        ProjectState.create(
+            "SQL Guard",
+            profile=Profile.BACKEND,
+            auth=True,
+            sample=True,
+        ),
+        destination,
+    )
+    repository = destination / "backend/src/app/repositories/forbidden_sql.py"
+    accepted = subprocess.run(
+        [sys.executable, "harness/check_sql.py"],
+        cwd=destination,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert accepted.returncode == 0, accepted.stderr
+
+    cases = (
+        (
+            "direct-import",
+            """
+            from psycopg.sql import SQL
+
+            def build(source: str):
+                return SQL(source)
+            """,
+            "psycopg.sql.SQL arguments must be static literals",
+        ),
+        (
+            "module-alias",
+            """
+            from psycopg import sql as pg_sql
+
+            def build(column: str):
+                return pg_sql.Identifier(column)
+            """,
+            "psycopg.sql.Identifier arguments must be static literals",
+        ),
+        (
+            "imported-module-alias",
+            """
+            import psycopg.sql as pg_sql
+
+            def build(value: object):
+                return pg_sql.Literal(value)
+            """,
+            "psycopg.sql.Literal arguments must be static literals",
+        ),
+        (
+            "constructor-secondary-alias",
+            """
+            from psycopg.sql import Literal as Quoted
+
+            First = Quoted
+            Second = First
+
+            def build(value: object):
+                return Second(value)
+            """,
+            "psycopg.sql.Literal arguments must be static literals",
+        ),
+        (
+            "module-secondary-alias-concatenation",
+            """
+            from psycopg import sql as base_sql
+
+            composed_sql = base_sql
+
+            def build(suffix: str):
+                return composed_sql.SQL("SELECT " + suffix)
+            """,
+            "psycopg.sql.SQL arguments must be static literals",
+        ),
+        (
+            "placeholder-variable",
+            """
+            from psycopg.sql import Placeholder as Bind
+
+            def build(name: str):
+                return Bind(name)
+            """,
+            "psycopg.sql.Placeholder arguments must be static literals",
+        ),
+        (
+            "sql-f-string",
+            """
+            from psycopg import sql
+
+            def build(table: str):
+                return sql.SQL(f"SELECT * FROM {table}")
+            """,
+            "SQL f-string is forbidden",
+        ),
+        (
+            "dynamic-non-select-execute",
+            """
+            from psycopg import sql
+
+            async def run(cursor, fragment: sql.Composable):
+                query = sql.SQL("UPDATE items SET ") + fragment
+                await cursor.execute(query, prepare=False)
+            """,
+            "dynamic execute must contain a literal SELECT anchor",
+        ),
+    )
+
+    for name, source, expected in cases:
+        repository.write_text(dedent(source), encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, "harness/check_sql.py"],
+            cwd=destination,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 1, f"{name} unexpectedly passed"
+        assert expected in result.stderr, f"{name}: {result.stderr}"
+    repository.unlink()

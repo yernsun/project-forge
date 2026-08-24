@@ -1,18 +1,242 @@
-# {{ project_name }}
+# {{ project_name | e }}
 
-该工程由 Project Forge {{ template_version }} 以 `{{ profile }}` 模式生成。
+简体中文 | [English](README.md)
 
-- 认证：`{{ auth | lower }}`
-- 事件能力：`{{ evented | lower }}`
-- 示例纵切：`{{ sample | lower }}`
-- 默认语言：`{{ default_locale }}`
+该工程由 Project Forge {{ template_version }} 以 `{{ profile }}` profile 生成。
 
-开发前先复制环境变量，并运行统一检查：
+## 工程能力
+
+| 能力 | 当前值 |
+|---|---|
+| 前端 | `{{ (profile != 'backend') | lower }}` |
+| 后端 | `{{ (profile != 'frontend') | lower }}` |
+| 认证 | `{{ auth | lower }}` |
+| 事件处理 | `{{ evented | lower }}` |
+| 示例纵切 | `{{ sample | lower }}` |
+| 默认语言 | `{{ default_locale }}` |
+
+`.project-forge.yml` 保存这组选择，`.project-forge/baseline.tar.gz` 用于受控三方更新。
+不要手工修改这两个文件。
+
+## 环境要求
+
+- 完整工作流需要 Git、Docker Engine 和 Compose v2。
+{% if profile != 'frontend' %}- 后端本地开发需要 Python `>=3.13` 和 uv。
+{% endif %}{% if profile != 'backend' %}- 前端本地开发需要 Node.js `>=22.12,<23` 和 npm。
+{% endif %}
+
+提交生成基线后，执行与 profile 匹配的环境检查：
 
 ```bash
-cp .env.example .env
-python harness/check.py
+project-forge doctor .
+project-forge doctor . --require-docker
+```
+
+## 使用开发 Compose 首次启动
+
+开发栈只启动当前 profile 需要的组件，并在 API 就绪前自动应用待执行迁移。
+{% if profile == 'frontend' and sample %}
+sample 前端默认连接容器可访问的 `http://host.docker.internal:8000`；需要时覆盖
+`FRONTEND_API_PROXY_TARGET`。
+{% endif %}
+
+```bash
 docker compose -f docker-compose.dev.yml up --build
 ```
 
-修改代码前阅读 `AGENTS.md`，架构入口为 `docs/README.md`。
+{% if profile != 'backend' %}- 前端：[http://localhost:5173](http://localhost:5173)
+{% endif %}{% if profile != 'frontend' %}- API 文档：[http://localhost:8000/docs](http://localhost:8000/docs)
+- 就绪检查：[http://localhost:8000/health/ready](http://localhost:8000/health/ready)
+{% endif %}
+
+停止服务并保留开发 volume：
+
+```bash
+docker compose -f docker-compose.dev.yml down
+```
+
+## 运行本地进程
+
+直接在主机运行的进程使用组件级环境文件；根目录 `.env` 专供生产 Compose。
+
+{% if profile != 'frontend' %}### 后端
+
+启动 PostgreSQL{% if evented %} 与 Redis{% endif %}：
+
+```bash
+docker compose -f docker-compose.dev.yml up -d db{% if evented %} redis{% endif %}
+```
+
+在后端终端中：
+
+```bash
+cp backend/.env.example backend/.env
+cd backend
+uv sync --frozen --all-groups{% if auth %} --extra auth{% endif %}{% if evented %} --extra evented{% endif %}
+uv run app migrate status
+uv run app migrate up
+uv run fastapi dev
+```
+
+存在待执行迁移时，API 会拒绝启动且 readiness 不通过。
+{% if auth %}
+认证数据维护：
+
+```bash
+cd backend
+uv run app auth purge-expired --dry-run
+uv run app auth purge-expired
+```
+{% endif %}{% if evented %}
+在另一个后端终端运行 outbox relay：
+
+```bash
+cd backend
+uv run python -m app.events.worker relay
+```
+{% endif %}{% endif %}
+
+{% if profile != 'backend' %}### 前端
+
+在前端终端中：
+
+```bash
+cp frontend/.env.example frontend/.env
+cd frontend
+npm ci
+npm run dev
+```
+
+`VITE_API_BASE_URL` 默认为空，使浏览器请求保持同源；`VITE_API_PROXY_TARGET` 控制本地
+Vite 代理。
+{% endif %}
+
+## 验证
+
+在仓库根目录运行与当前 profile 匹配的全部检查：
+
+```bash
+python harness/check.py
+```
+
+CI 严格模式会将缺失工具视为失败，并校验两份 Compose：
+
+```bash
+HARNESS_STRICT=1 HARNESS_DOCKER=1 python harness/check.py
+```
+
+{% if profile != 'frontend' %}后端独立门禁：
+
+```bash
+cd backend
+uv run --frozen --no-sync ruff check .
+uv run --frozen --no-sync mypy src/app
+uv run --frozen --no-sync pytest
+```
+{% endif %}
+
+{% if profile != 'backend' %}前端独立门禁：
+
+```bash
+cd frontend
+npm run lint
+npm run typecheck
+npm run test
+npm run build
+npm run api:check
+npm run i18n:check
+```
+
+### 刷新前端 API 类型
+
+`frontend/.api-contract.json` 指向当前受跟踪的 OpenAPI 合约。有意修改 API 后，先刷新
+JSON，再重新生成 TypeScript：
+
+{% if profile == 'fullstack' %}```bash
+cd backend
+uv run --frozen --no-sync python ../harness/export_openapi.py \
+  ../frontend/scripts/openapi/contracts/{% if auth and sample %}auth-sample{% elif auth %}auth{% elif sample %}sample{% else %}core{% endif %}.json
+cd ../frontend
+npm run api:generate
+npm run api:check
+```
+{% else %}```bash
+cp /path/to/openapi.json \
+  frontend/scripts/openapi/contracts/{% if sample %}sample{% else %}core{% endif %}.json
+cd frontend
+npm run api:generate
+npm run api:check
+```
+{% endif %}{% endif %}
+
+{% if profile != 'frontend' %}## API 示例
+
+健康检查不需要认证：
+
+```bash
+curl http://localhost:8000/health/live
+curl http://localhost:8000/health/ready
+```
+
+{% if sample and not auth %}创建和查询 sample item：
+
+```bash
+curl -X POST http://localhost:8000/api/v1/items \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"First item","description":"Created from curl"}'
+
+curl 'http://localhost:8000/api/v1/items?name=First&sort=createdAtDesc'
+```
+{% endif %}
+
+{% if auth %}创建开发用户并保存 session cookie：
+
+```bash
+curl -i -c .cookies.txt \
+  -H 'Origin: http://localhost:5173' \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"developer@example.com","password":"correct-horse-battery","workspaceName":"Personal"}' \
+  http://localhost:8000/api/v1/auth/signup
+
+curl -b .cookies.txt http://localhost:8000/api/v1/auth/session
+curl -b .cookies.txt http://localhost:8000/api/v1/workspaces
+```
+
+认证后的 unsafe 请求还必须把可读 CSRF cookie 放入 `X-CSRF-Token`；生成的前端 middleware
+会自动完成。
+{% endif %}{% endif %}
+
+## 生产 Compose
+
+复制根目录生产环境文件，替换全部占位值后再验证：
+
+```bash
+cp .env.example .env
+docker compose config
+docker compose up -d --build
+```
+
+gateway 默认绑定 `127.0.0.1:8080`，预期部署在外部 TLS terminator 后方。
+{% if profile == 'frontend' and sample %}
+将 `FRONTEND_API_UPSTREAM` 设置为 gateway 容器可访问的 API origin。
+{% endif %}{% if auth %}
+生产认证会 fail closed：Origin 必须为 HTTPS、Cookie 必须 Secure、数据库 URL 和限流 secret
+必须显式配置，`FORWARDED_ALLOW_IPS` 只能包含受控代理 IP/CIDR。生产环境默认关闭注册。
+{% endif %}
+
+## 演进当前工程
+
+仅在 Git 工作区干净时执行：
+
+```bash
+project-forge features .
+project-forge doctor .
+project-forge update --check .
+project-forge update .
+```
+
+Project Forge 支持单向 `add`/`enable`，不移除能力。更新冲突会保留全部受管文件，并生成
+`.rej` 供人工解决。
+
+修改代码前阅读 `AGENTS.md`。架构导航见 [`docs/README.md`](docs/README.md)，其中包含
+Service/UoW/Repository、SQL、迁移、i18n、认证和事件规则。

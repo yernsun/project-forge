@@ -1,0 +1,34 @@
+import { expect, test } from '@playwright/test'
+
+test('application shell loads', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.locator('.app-shell')).toBeVisible()
+})
+
+{% if auth and sample %}test('signup, workspace item, session restore, and logout form one flow', async ({ page }) => {
+  const identity = `e2e-${Date.now()}@example.test`
+  const itemName = `Item ${Date.now()}`
+
+  await page.goto('/')
+  await page.getByTestId('auth-signup-mode').click()
+  await page.getByTestId('auth-email').fill(identity)
+  await page.locator('#auth-password').fill('correct horse battery staple')
+  await page.getByTestId('auth-workspace-name').fill('E2E Workspace')
+  await page.getByTestId('auth-submit').click()
+
+  await expect(page.getByTestId('workspace-select')).toBeVisible()
+  await page.getByTestId('item-name').fill(itemName)
+  await page.getByTestId('item-submit').click()
+  await expect(page.getByText(itemName)).toBeVisible()
+
+  await page.reload()
+  await expect(page.getByTestId('workspace-select')).toBeVisible()
+  await expect(page.getByText(itemName)).toBeVisible()
+
+  await page.getByTestId('auth-logout').click()
+  await expect(page.getByTestId('auth-submit')).toBeVisible()
+  await expect(page.getByTestId('workspace-select')).toHaveCount(0)
+  await expect(page.getByText(itemName)).toHaveCount(0)
+  await expect(page.locator('.create-form')).toHaveCount(0)
+})
+{% endif %}

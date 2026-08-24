@@ -93,7 +93,7 @@ class MigrationRunner:
         async with self._connection.cursor() as cursor:
             await cursor.execute(
                 sql.SQL("SELECT to_regclass(%(table_name)s) AS table_name"),
-                {"table_name": "public.schema_migrations"},
+                {"table_name": "schema_migrations"},
             )
             row = await cursor.fetchone()
         return bool(row and row["table_name"])
@@ -111,7 +111,9 @@ class MigrationRunner:
             rows = await cursor.fetchall()
         return {row["migration_id"]: (row["checksum"], row["applied_at"]) for row in rows}
 
-    async def validate(self) -> None:
+    async def validate_history(self) -> None:
+        """Reject unknown or modified applied migrations without requiring a current schema."""
+
         if not await self._tracking_exists():
             raise MigrationError("database is not initialized; run `app migrate up`")
         applied = await self._applied()
@@ -122,6 +124,26 @@ class MigrationRunner:
         for migration_id, (checksum, _) in applied.items():
             if known[migration_id].checksum != checksum:
                 raise MigrationError(f"checksum mismatch for applied migration {migration_id}")
+
+    async def validate_current(self) -> None:
+        """Require valid history with every migration in this application applied."""
+
+        await self.validate_history()
+        applied = await self._applied()
+        pending = tuple(
+            migration.migration_id
+            for migration in self._migrations
+            if migration.migration_id not in applied
+        )
+        if pending:
+            raise MigrationError(
+                f"database has pending migrations: {list(pending)}; run `app migrate up`"
+            )
+
+    async def validate(self) -> None:
+        """Backward-compatible operator command: validate that the schema is current."""
+
+        await self.validate_current()
 
     async def status(self) -> tuple[MigrationStatus, ...]:
         applied = await self._applied()
@@ -148,7 +170,7 @@ class MigrationRunner:
                     sql.SQL("SELECT pg_advisory_xact_lock(%(lock_key)s)"),
                     {"lock_key": 718_340_211},
                 )
-            await self.validate()
+            await self.validate_history()
             applied = await self._applied()
             for migration in self._migrations:
                 if migration.migration_id in applied:

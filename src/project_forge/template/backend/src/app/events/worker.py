@@ -77,7 +77,7 @@ class StreamConsumer:
         try:
             async with self._unit_of_work_factory() as unit_of_work:
                 first_delivery = await unit_of_work.processed_messages.mark_once(
-                    self._group, message_id
+                    self._group, envelope.event_id
                 )
                 if first_delivery:
                     await self._handler(unit_of_work, envelope)

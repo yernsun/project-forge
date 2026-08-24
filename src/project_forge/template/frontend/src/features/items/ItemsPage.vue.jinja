@@ -3,24 +3,33 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
+import Message from 'primevue/message'
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import { createItem, listItems } from '@/shared/api/client'
+import {
+{% if auth %}  ApiRequestError,
+{% endif %}  createItem,
+  listItems,
+  type ItemDto,
+} from '@/shared/api/client'
 
-const { t } = useI18n()
+{% if auth %}import { authErrorTranslationKey } from '@/features/auth/session'
+
+const props = defineProps<{ workspaceId: string | null }>()
+{% endif %}const { t, locale } = useI18n()
 const queryClient = useQueryClient()
 const name = ref('')
 const description = ref('')
-{% if auth %}const workspaceId = ref(localStorage.getItem('app.workspaceId') ?? '')
-{% else %}const workspaceId = ref('')
-{% endif %}
-const queryKey = computed(() => ['items', workspaceId.value])
+{% if auth %}const workspaceId = computed(() => props.workspaceId)
+{% else %}const workspaceId = computed<string | null>(() => null)
+{% endif %}const queryKey = computed(() => ['items', workspaceId.value])
 const query = useQuery({
   queryKey,
   queryFn: () => listItems(workspaceId.value || undefined),
-{% if auth %}  enabled: computed(() => workspaceId.value.length > 0),
-{% endif %}})
+{% if auth %}  enabled: computed(() => Boolean(workspaceId.value)),
+{% endif %}  retry: false,
+})
 const mutation = useMutation({
   mutationFn: () =>
     createItem(
@@ -34,9 +43,23 @@ const mutation = useMutation({
   },
 })
 
-{% if auth %}function rememberWorkspace(): void {
-  localStorage.setItem('app.workspaceId', workspaceId.value)
+function statusLabel(status: ItemDto['status']): string {
+  return t(`items.statuses.${status.toLowerCase()}`)
 }
+
+function formatDate(value: string): string {
+  return new Intl.DateTimeFormat(locale.value, { dateStyle: 'medium', timeStyle: 'short' })
+    .format(new Date(value))
+}
+{% if auth %}
+function localizedRequestError(error: unknown, fallback: string): string {
+  const key = authErrorTranslationKey(error)
+  if (!key) return t(fallback)
+  return t(key, { seconds: error instanceof ApiRequestError ? error.retryAfter ?? 0 : 0 })
+}
+
+const queryErrorMessage = computed(() => localizedRequestError(query.error.value, 'items.loadError'))
+const mutationErrorMessage = computed(() => localizedRequestError(mutation.error.value, 'items.createError'))
 {% endif %}
 </script>
 
@@ -50,23 +73,24 @@ const mutation = useMutation({
         severity="secondary"
         variant="outlined"
         :loading="query.isFetching.value"
-        @click="query.refetch()"
+        {% if auth %}:disabled="!workspaceId"
+        {% endif %}@click="query.refetch()"
       />
     </div>
-{% if auth %}    <label class="field workspace-field">
-      <span v-text="t('items.workspaceId')" />
-      <input v-model.trim="workspaceId" type="text" @change="rememberWorkspace" />
-    </label>
+{% if auth %}    <Message v-if="!workspaceId" severity="info" :closable="false">
+      <span v-text="t('items.chooseWorkspace')" />
+    </Message>
 {% endif %}    <form class="create-form" @submit.prevent="mutation.mutate()">
       <label class="field">
         <span v-text="t('items.name')" />
-        <input v-model.trim="name" required maxlength="200" />
+        <input v-model.trim="name" data-testid="item-name" required maxlength="200" />
       </label>
       <label class="field">
         <span v-text="t('items.description')" />
         <input v-model.trim="description" maxlength="2000" />
       </label>
       <Button
+        data-testid="item-submit"
         type="submit"
         :label="t('items.create')"
         icon="pi pi-plus"
@@ -74,7 +98,12 @@ const mutation = useMutation({
         :disabled="!name{% if auth %} || !workspaceId{% endif %}"
       />
     </form>
-    <p v-if="query.isError.value" class="error-message" v-text="t('items.loadError')" />
+    <Message v-if="query.isError.value" severity="error" :closable="false" role="alert">
+      <span v-text="{% if auth %}queryErrorMessage{% else %}t('items.loadError'){% endif %}" />
+    </Message>
+    <Message v-if="mutation.isError.value" severity="error" :closable="false" role="alert">
+      <span v-text="{% if auth %}mutationErrorMessage{% else %}t('items.createError'){% endif %}" />
+    </Message>
     <DataTable
       :value="query.data.value ?? []"
       data-key="itemId"
@@ -87,8 +116,12 @@ const mutation = useMutation({
     >
       <Column field="name" :header="t('items.name')" sortable />
       <Column field="description" :header="t('items.description')" />
-      <Column field="status" :header="t('items.status')" sortable />
-      <Column field="createdAt" :header="t('items.createdAt')" sortable />
+      <Column field="status" :header="t('items.status')" sortable>
+        <template #body="{ data }"><span v-text="statusLabel(data.status)" /></template>
+      </Column>
+      <Column field="createdAt" :header="t('items.createdAt')" sortable>
+        <template #body="{ data }"><span v-text="formatDate(data.createdAt)" /></template>
+      </Column>
     </DataTable>
   </section>
 </template>
