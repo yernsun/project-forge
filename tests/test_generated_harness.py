@@ -89,6 +89,10 @@ def test_static_generated_harnesses_pass(state: ProjectState, tmp_path: Path) ->
     environment = validate.get("env", {})
     if state.auth:
         assert environment["PROJECT_FORGE_DESTRUCTIVE_PG_TESTS"] == "1"
+        auth_tests = (destination / "backend/tests/test_auth.py").read_text(
+            encoding="utf-8"
+        )
+        assert "unstyle(result.stdout)" in auth_tests
     else:
         assert "PROJECT_FORGE_DESTRUCTIVE_PG_TESTS" not in environment
     if state.profile is Profile.FRONTEND and state.sample:
@@ -123,6 +127,12 @@ def test_static_generated_harnesses_pass(state: ProjectState, tmp_path: Path) ->
     emits_auth_e2e = state.profile is Profile.FULLSTACK and state.auth and state.sample
     assert ("auth-compose-e2e" in workflow["jobs"]) is emits_auth_e2e
     if emits_auth_e2e:
+        auth_flow = (
+            destination / "frontend/tests/e2e/auth-flow.e2e.ts"
+        ).read_text(encoding="utf-8")
+        assert "@example.com" in auth_flow
+        assert "@example.test" not in auth_flow
+        assert "expect((await signupResponse).status()).toBe(201)" in auth_flow
         e2e = workflow["jobs"]["auth-compose-e2e"]
         assert e2e["needs"] == "validate"
         assert "services" not in e2e

@@ -6,7 +6,7 @@ test('application shell loads', async ({ page }) => {
 })
 
 {% if auth and sample %}test('signup, workspace item, session restore, and logout form one flow', async ({ page }) => {
-  const identity = `e2e-${Date.now()}@example.test`
+  const identity = `e2e-${Date.now()}@example.com`
   const itemName = `Item ${Date.now()}`
 
   await page.goto('/')
@@ -14,7 +14,11 @@ test('application shell loads', async ({ page }) => {
   await page.getByTestId('auth-email').fill(identity)
   await page.locator('#auth-password').fill('correct horse battery staple')
   await page.getByTestId('auth-workspace-name').fill('E2E Workspace')
+  const signupResponse = page.waitForResponse((response) =>
+    response.url().endsWith('/api/v1/auth/signup') && response.request().method() === 'POST',
+  )
   await page.getByTestId('auth-submit').click()
+  expect((await signupResponse).status()).toBe(201)
 
   await expect(page.getByTestId('workspace-select')).toBeVisible()
   await page.getByTestId('item-name').fill(itemName)

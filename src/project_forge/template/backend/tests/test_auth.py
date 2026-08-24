@@ -5,6 +5,7 @@ from typing import cast
 import pytest
 from argon2 import PasswordHasher
 from argon2.low_level import Type
+from click import unstyle
 from fastapi import FastAPI, Response
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
@@ -516,7 +517,7 @@ def test_signup_and_login_errors_have_explicit_http_contracts(
 def test_auth_purge_cli_exposes_dry_run() -> None:
     result = CliRunner().invoke(cli_app, ["auth", "purge-expired", "--help"])
     assert result.exit_code == 0
-    assert "--dry-run" in result.stdout
+    assert "--dry-run" in unstyle(result.stdout)
 
 
 def test_fixed_window_is_stable_within_the_window() -> None:
