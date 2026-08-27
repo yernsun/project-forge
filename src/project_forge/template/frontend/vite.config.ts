@@ -25,6 +25,18 @@ export default defineConfig(({ mode }) => {
     test: {
       environment: 'jsdom',
       setupFiles: ['./src/test/setup.ts'],
+      coverage: {
+        provider: 'v8',
+        reporter: ['text', 'json-summary'],
+        include: ['src/**/*.{ts,vue}'],
+        exclude: ['src/env.d.ts', 'src/shared/api/schema.d.ts', 'src/test/**'],
+        thresholds: {
+          lines: 60,
+          functions: 60,
+          statements: 60,
+          branches: 50,
+        },
+      },
     },
   }
 })

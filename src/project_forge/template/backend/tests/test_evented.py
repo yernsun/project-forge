@@ -73,6 +73,20 @@ class _Redis:
         return 1
 
 
+class _FailingRedis(_Redis):
+    def __init__(self, attempts: int) -> None:
+        super().__init__()
+        self.attempts = attempts
+        self.dlq: list[tuple[str, dict[str, object]]] = []
+
+    async def hincrby(self, _key: str, _message_id: str, _amount: int) -> int:
+        return self.attempts
+
+    async def xadd(self, stream: str, fields: dict[str, object]) -> str:
+        self.dlq.append((stream, fields))
+        return "2000-0"
+
+
 @pytest.mark.asyncio
 async def test_same_event_under_two_stream_ids_is_applied_once_and_both_are_acked() -> None:
     envelope = EventEnvelope.new("example.created", {"itemId": "42"})
@@ -98,6 +112,93 @@ async def test_same_event_under_two_stream_ids_is_applied_once_and_both_are_acke
         ("events", "example-projector", "1000-0"),
         ("events", "example-projector", "1001-0"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_exhausted_stream_message_is_parked_in_dlq_and_acked() -> None:
+    envelope = EventEnvelope.new("example.failed", {"itemId": "42"})
+    fields = {b"payload": envelope.model_dump_json(by_alias=True).encode()}
+    redis = _FailingRedis(attempts=2)
+    handler = AsyncMock(side_effect=RuntimeError("sensitive failure detail"))
+    consumer = StreamConsumer(
+        cast(Redis, redis),
+        cast(UnitOfWorkFactory, _UnitOfWorkFactory(_ProcessedMessages())),
+        stream="events",
+        group="example-projector",
+        consumer="test-consumer",
+        handler=cast(Callable[[UnitOfWork, EventEnvelope], Awaitable[None]], handler),
+        max_attempts=2,
+    )
+
+    await consumer.process("1000-0", fields)
+
+    assert redis.acked == [("events", "example-projector", "1000-0")]
+    assert redis.dlq[0][0] == "events.dlq"
+    assert redis.dlq[0][1]["errorCode"] == "RuntimeError"
+    assert "sensitive failure detail" not in str(redis.dlq)
+
+
+@pytest.mark.asyncio
+async def test_malformed_stream_payload_is_bounded_and_moved_to_dlq() -> None:
+    raw_payload = b'{"eventId":"not-a-uuid"}'
+    redis = _FailingRedis(attempts=2)
+    handler = AsyncMock()
+    consumer = StreamConsumer(
+        cast(Redis, redis),
+        cast(UnitOfWorkFactory, _UnitOfWorkFactory(_ProcessedMessages())),
+        stream="events",
+        group="example-projector",
+        consumer="test-consumer",
+        handler=cast(Callable[[UnitOfWork, EventEnvelope], Awaitable[None]], handler),
+        max_attempts=2,
+    )
+
+    await consumer.process("1002-0", {b"payload": raw_payload})
+
+    handler.assert_not_awaited()
+    assert redis.acked == [("events", "example-projector", "1002-0")]
+    assert redis.dlq == [
+        (
+            "events.dlq",
+            {
+                "messageId": "1002-0",
+                "payload": raw_payload,
+                "attempts": 2,
+                "errorCode": "ValidationError",
+            },
+        )
+    ]
+
+
+class _ReclaimRedis(_Redis):
+    def __init__(self, fields: dict[bytes, bytes]) -> None:
+        super().__init__()
+        self.fields = fields
+
+    async def xautoclaim(
+        self, *_args: object, **_kwargs: object
+    ) -> tuple[str, list[tuple[bytes, dict[bytes, bytes]]], list[bytes]]:
+        return "0-0", [(b"1000-0", self.fields)], []
+
+
+@pytest.mark.asyncio
+async def test_consumer_reclaims_and_processes_abandoned_pending_messages() -> None:
+    envelope = EventEnvelope.new("example.reclaimed", {"itemId": "42"})
+    fields = {b"payload": envelope.model_dump_json(by_alias=True).encode()}
+    redis = _ReclaimRedis(fields)
+    handler = AsyncMock()
+    consumer = StreamConsumer(
+        cast(Redis, redis),
+        cast(UnitOfWorkFactory, _UnitOfWorkFactory(_ProcessedMessages())),
+        stream="events",
+        group="example-projector",
+        consumer="test-consumer",
+        handler=cast(Callable[[UnitOfWork, EventEnvelope], Awaitable[None]], handler),
+    )
+
+    assert await consumer.reclaim_stale() == 1
+    handler.assert_awaited_once()
+    assert redis.acked == [("events", "example-projector", "1000-0")]
 
 
 @pytest.mark.asyncio

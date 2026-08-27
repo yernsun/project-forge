@@ -17,6 +17,9 @@ successful login upgrades hashes whose work factor is stale.
 - Authentication responses use `Cache-Control: no-store`. Errors have a stable `{code, message}`
   body and distinguish unauthenticated (401), CSRF/origin denial (403), conflict (409), and rate
   limiting (429).
+- Every response includes `X-Request-ID`. Validation and access logs are structured and correlated
+  by that ID, but never include request bodies, passwords, cookies, session/CSRF tokens, or secrets.
+  `app config check --json` provides the redacted effective configuration needed for diagnosis.
 
 Development cookies are named `<project-slug>-session` and `<project-slug>-csrf`. Secure deployments
 use host-only `__Host-<project-slug>-session` and `__Host-<project-slug>-csrf` cookies with `Secure`,
@@ -85,3 +88,8 @@ The baseline intentionally excludes email verification, password reset, password
 invitations, OIDC, MFA, RBAC, user disablement workflows, and both per-device and all-device logout.
 Add those as separately reviewed capabilities rather than weakening the session, CSRF, or
 transaction boundaries above.
+
+Development Compose reads only `DEV_*` overrides from an explicitly supplied `.env.dev`; production
+`.env` settings cannot silently alter it. Default ports remain loopback-only. A LAN recipe may bind
+only the frontend and must list the exact browser origin in `DEV_APP_ALLOWED_ORIGINS`; the API,
+PostgreSQL, and Redis stay on loopback.

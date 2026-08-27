@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from psycopg import sql
@@ -8,7 +8,7 @@ from psycopg.types.json import Jsonb
 
 from app.db.types import DbConnection
 from app.domain.base import utc_now
-from app.events.models import EventEnvelope, OutboxRecord
+from app.events.models import EventEnvelope, OutboxRecord, OutboxStatus
 
 
 class OutboxRepository:
@@ -42,7 +42,8 @@ class OutboxRepository:
                 sql.SQL(
                     "WITH candidates AS ("
                     " SELECT event_id FROM outbox_events"
-                    " WHERE published_at IS NULL AND available_at <= %(now)s"
+                    " WHERE published_at IS NULL AND failed_at IS NULL"
+                    "   AND available_at <= %(now)s"
                     "   AND (locked_at IS NULL OR locked_at < %(stale_before)s)"
                     " ORDER BY created_at, event_id FOR UPDATE SKIP LOCKED LIMIT %(limit)s"
                     ") UPDATE outbox_events o SET locked_at = %(now)s, locked_by = %(worker_id)s,"
@@ -84,20 +85,87 @@ class OutboxRepository:
                 prepare=True,
             )
 
-    async def release_with_backoff(self, event_id: UUID, attempts: int) -> None:
+    async def release_with_backoff(
+        self,
+        event_id: UUID,
+        attempts: int,
+        *,
+        error_code: str,
+        max_attempts: int,
+    ) -> bool:
+        """Release for retry or park after the bounded attempt count; return parked state."""
+
+        now = utc_now()
+        if attempts >= max_attempts:
+            async with self._connection.cursor() as cursor:
+                await cursor.execute(
+                    sql.SQL(
+                        "UPDATE outbox_events SET failed_at = %(now)s, "
+                        "last_failed_at = %(now)s, last_error_code = %(error_code)s, "
+                        "locked_at = NULL, locked_by = NULL WHERE event_id = %(event_id)s"
+                    ),
+                    {"now": now, "error_code": error_code[:200], "event_id": event_id},
+                    prepare=True,
+                )
+            return True
         delay_seconds = min(300, 2 ** min(attempts, 8))
         async with self._connection.cursor() as cursor:
             await cursor.execute(
                 sql.SQL(
-                    "UPDATE outbox_events SET available_at = %(available_at)s, locked_at = NULL, "
-                    "locked_by = NULL WHERE event_id = %(event_id)s"
+                    "UPDATE outbox_events SET available_at = %(available_at)s, "
+                    "last_failed_at = %(now)s, last_error_code = %(error_code)s, "
+                    "locked_at = NULL, locked_by = NULL WHERE event_id = %(event_id)s"
                 ),
                 {
-                    "available_at": utc_now() + timedelta(seconds=delay_seconds),
+                    "available_at": now + timedelta(seconds=delay_seconds),
+                    "now": now,
+                    "error_code": error_code[:200],
                     "event_id": event_id,
                 },
                 prepare=True,
             )
+        return False
+
+    async def status(self, now: datetime) -> OutboxStatus:
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                sql.SQL(
+                    "SELECT "
+                    "count(*) FILTER (WHERE published_at IS NULL AND failed_at IS NULL "
+                    "AND available_at <= %(now)s) AS ready, "
+                    "count(*) FILTER (WHERE published_at IS NULL AND failed_at IS NULL "
+                    "AND available_at > %(now)s) AS deferred, "
+                    "count(*) FILTER (WHERE published_at IS NULL AND failed_at IS NOT NULL) "
+                    "AS failed, "
+                    "count(*) FILTER (WHERE published_at IS NOT NULL) AS published "
+                    "FROM outbox_events"
+                ),
+                {"now": now},
+                prepare=True,
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            raise RuntimeError("outbox status query returned no row")
+        return OutboxStatus.model_validate(row)
+
+    async def retry_failed(self, *, now: datetime, limit: int) -> tuple[UUID, ...]:
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                sql.SQL(
+                    "WITH candidates AS ("
+                    " SELECT event_id FROM outbox_events"
+                    " WHERE published_at IS NULL AND failed_at IS NOT NULL"
+                    " ORDER BY failed_at, event_id FOR UPDATE SKIP LOCKED LIMIT %(limit)s"
+                    ") UPDATE outbox_events o SET failed_at = NULL, attempts = 0, "
+                    "available_at = %(now)s, locked_at = NULL, locked_by = NULL, "
+                    "last_error_code = NULL FROM candidates c WHERE o.event_id = c.event_id "
+                    "RETURNING o.event_id"
+                ),
+                {"now": now, "limit": limit},
+                prepare=True,
+            )
+            rows = await cursor.fetchall()
+        return tuple(row["event_id"] for row in rows)
 
 
 class ProcessedMessageRepository:

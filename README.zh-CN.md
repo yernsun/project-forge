@@ -30,7 +30,7 @@ Docker 拓扑、CI、双语 i18n，以及可选的认证与事件处理能力。
 
 后端支持 Python `>=3.11`，Docker 默认使用 Python 3.13，并包含 FastAPI、Pydantic v2、
 Psycopg 3、PostgreSQL 16、前向迁移和 Repository SQL；前端支持 Node LTS
-`>=22.12 <23 || >=24 <25`，Docker 和生成项目 CI 默认使用 Node 24，并包含 Vue 3、Vite、TypeScript、PrimeVue、
+`>=22.13 <23 || >=24 <25`，Docker 和生成项目 CI 默认使用 Node 24，并包含 Vue 3、Vite、TypeScript、PrimeVue、
 Vue Query、仅保存客户端状态的 Pinia，以及 `zh-CN`/`en-US` 语言包。
 
 ## 环境要求
@@ -40,7 +40,7 @@ Vue Query、仅保存客户端状态的 Pinia，以及 `zh-CN`/`en-US` 语言包
 | Python | 始终 | `>=3.11` |
 | uv | 始终 | 当前稳定版 |
 | Git | 受管演进 | 当前稳定版 |
-| Node.js 与 npm | frontend/fullstack | Node LTS `>=22.12 <23 || >=24 <25` |
+| Node.js 与 npm | frontend/fullstack | Node LTS `>=22.13 <23 || >=24 <25` |
 | Docker Engine 与 Compose v2 | 容器工作流 | 当前稳定版 |
 
 创建工程前检查当前机器：
@@ -114,7 +114,8 @@ cd ../acme-console
 git add .
 git commit -m "chore: initialize with Project Forge"
 python harness/check.py
-docker compose -f docker-compose.dev.yml up --build
+cp .env.dev.example .env.dev
+docker compose --env-file .env.dev -f docker-compose.dev.yml up --build
 ```
 
 访问：
@@ -254,7 +255,9 @@ frontend-only 工程不能直接开启 `auth` 或 `evented`，应先增加 backe
 
 ## 升级生成工程
 
-`update --check` 只比较工程记录版本与当前已安装 CLI 内置模板，不访问 GitHub 或其他远端：
+`update --check` 会渲染并比较当前已安装 CLI 的内置模板。状态 schema 2 记录确定性的模板
+digest，因此即使公开版本仍为 `0.2.0`，也能识别模板内容刷新。该命令不会访问 GitHub 或
+其他远端，也不会写入受管文件、状态、baseline 或 `.rej`：
 
 ```bash
 uv tool upgrade project-forge
@@ -302,9 +305,26 @@ HARNESS_STRICT=1 HARNESS_DOCKER=1 python harness/check.py
 启动开发 Compose：
 
 ```bash
-docker compose -f docker-compose.dev.yml up --build
-docker compose -f docker-compose.dev.yml down
+cp .env.dev.example .env.dev
+docker compose --env-file .env.dev -f docker-compose.dev.yml up --build
+docker compose --env-file .env.dev -f docker-compose.dev.yml down
 ```
+
+未显式传入开发环境文件时，所有发布端口默认绑定 `127.0.0.1`，示例有效值也只绑定回环
+地址。注释中的局域网配方仅开放前端，并使用仅供文档说明的私有地址 `172.20.0.10`，
+使用时应在本地替换。生产 `.env` 不会泄漏到隔离的 `DEV_*` 配置。前端保持 API 同源，
+并拒绝跨 Origin 的 `VITE_API_BASE_URL`。
+
+生成后端还提供脱敏运行配置诊断；evented 工程包含有上限的失败恢复命令：
+
+```bash
+cd backend
+uv run app config check --json
+uv run app events status --json
+uv run app events retry-failed --limit 100 --dry-run
+```
+
+每个 API 响应都带有 `X-Request-ID`，结构化日志复用该标识，但不记录请求 body 或凭据。
 
 生产 Compose 预期位于外部 TLS terminator 后方，gateway 默认只绑定 `127.0.0.1:8080`。
 启动前替换全部占位值：
@@ -322,7 +342,7 @@ docker compose up -d --build
 
 | 退出码 | 含义 |
 |---:|---|
-| `0` | 成功；`update --check` 未发现更高的已安装模板版本 |
+| `0` | 成功；`update --check` 未发现已安装模板差异 |
 | `1` | doctor 必需检查失败，或 `update --check` 发现可更新 |
 | `2` | 用法、工程状态、Git 干净度或其他运行错误 |
 | `3` | 更新冲突；只写入了 `.rej` |
@@ -351,9 +371,9 @@ python3 PATH/harness/check.py
 uv tool install --force --python 3.11 git+https://github.com/yernsun/project-forge.git
 ```
 
-`update --check` 不会主动查询远端。本次兼容改造保持 `0.2.0`，旧 `0.2.0` 工程没有可供
-`--check` 报告的版本差；刷新工具后应直接执行 `project-forge update PATH`。Git 干净工作区、
-全量原子更新及冲突 `.rej` 规则仍然有效。
+`update --check` 不会主动查询远端。重新安装工具后，它会结合已记录的模板 digest 和真实
+dry render/三方比较，因此能够报告同版本 `0.2.0` 的刷新；发现差异后执行
+`project-forge update PATH`。Git 干净工作区、全量原子更新及冲突 `.rej` 规则仍然有效。
 
 ### 演进命令提示 Git 工作区不干净
 
@@ -367,8 +387,9 @@ Docker CLI、Compose v2 和 daemon 均可用。
 
 ### 前端拒绝当前 Node 版本
 
-使用 Node LTS `>=22.12 <23 || >=24 <25`。Node 22.0–22.11 低于
-[Vite 运行时下限](https://vite.dev/guide/)。Node 23 和 25 已 EOL；Node 26 在未来的
+使用 Node LTS `>=22.13 <23 || >=24 <25`。Node 22.0–22.12 低于仍受维护的
+[ESLint 10 运行时下限](https://eslint.org/docs/latest/use/getting-started)；Vite 本身允许
+22.12+。Node 23 和 25 已 EOL；Node 26 在未来的
 Project Forge 版本明确采纳其 LTS 后才会进入支持范围。
 
 ## 开发 Project Forge
@@ -377,7 +398,15 @@ Project Forge 版本明确采纳其 LTS 后才会进入支持范围。
 uv sync --all-groups
 uv run --frozen python harness/check.py
 uv run --frozen python harness/manage_openapi_contracts.py --check
+uv run --frozen pip-audit
+cd src/project_forge/template/frontend
+npm audit --audit-level=high
 ```
+
+根测试强制 branch coverage，生成工程严格 harness 强制前后端覆盖率；CI 还包含 macOS/Windows
+CLI smoke、Python 3.11～3.14、受支持 Node LTS、依赖审计、无需 TLS 的生产 Compose 内部
+readiness smoke、wheel 隔离安装以及认证 Compose E2E。发布 tag 还会与 `pyproject.toml`
+版本对齐，并生成 checksum、SBOM 与 provenance；公开版本继续保持 `0.2.0`。
 
 有意修改 API route 或 DTO 后：
 

@@ -10,8 +10,12 @@
 - Production authentication fails closed unless cookies are Secure and allowed origins are HTTPS.
 - Authentication/session responses are not cacheable, and external clients branch on stable error
   codes rather than server message text.
+- Correlate HTTP diagnostics with `X-Request-ID`; structured logs and config summaries never include
+  bodies, credentials, cookies, session/CSRF tokens, database URLs, or secrets.
 - Workspace paths and membership checks are explicit; never infer tenant scope from payload data.
 - Outbox writes share the domain transaction.
 - Stream consumers acknowledge only after commit and must deduplicate by the envelope's stable
   business event ID, never by the Redis stream entry ID.
 - Exhausted messages enter a DLQ; unknown outcomes are reviewed rather than retried forever.
+- Reclaim stale pending entries, cap relay attempts, park exhausted outbox rows, and require a
+  bounded explicit operator retry after the underlying failure is fixed.

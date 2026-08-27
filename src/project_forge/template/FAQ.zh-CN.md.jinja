@@ -21,8 +21,8 @@
 
 ```bash
 docker compose ls
-docker compose -f docker-compose.dev.yml ps
-docker compose -f docker-compose.dev.yml logs --tail=100 api frontend
+docker compose --env-file .env.dev -f docker-compose.dev.yml ps
+docker compose --env-file .env.dev -f docker-compose.dev.yml logs --tail=100 api frontend
 ```
 
 生成的开发 API 使用 `fastapi dev`，生产镜像默认使用 `fastapi run`。只修改 `APP_ENV`
@@ -33,27 +33,32 @@ docker compose -f docker-compose.dev.yml logs --tail=100 api frontend
 | 启动方式 | 配置来源 |
 |---|---|
 | 生产 Compose | 根目录 `.env`，由 `docker-compose.yml` 展开 |
-| 开发 Compose | `docker-compose.dev.yml` 中声明的值 |
+| 开发 Compose | `docker-compose.dev.yml` 的安全默认值，可由 `.env.dev` 覆盖 |
 | 直接在主机运行后端 | `backend/.env` |
 | 直接在主机运行前端 | `frontend/.env` |
 
-根目录 `.env` 无法覆盖 `docker-compose.dev.yml` 中写死的值。应检查 Compose 最终配置，
-不要假设某个文件已经被读取：
+生产与开发变量刻意隔离：生产使用 `APP_ALLOWED_ORIGINS` 等名称，开发 Compose 读取
+`DEV_APP_ALLOWED_ORIGINS`。先复制受版本控制且不含秘密的示例，并始终显式传入：
 
 ```bash
-docker compose -f docker-compose.dev.yml config
-docker compose -f docker-compose.dev.yml exec -T api printenv \
+cp .env.dev.example .env.dev
+docker compose --env-file .env.dev -f docker-compose.dev.yml config
+docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T api printenv \
   APP_ENV APP_ALLOWED_ORIGINS APP_SESSION_COOKIE_SECURE APP_SIGNUP_ENABLED
 ```
+
+不传 `.env.dev` 时，所有生成的主机端口都绑定到 `127.0.0.1`；示例中的有效值同样只绑定
+回环地址。注释中的局域网配方只开放前端，PostgreSQL、Redis 和 API 仍只绑定回环地址。
+不要把生产秘密复制到 `.env.dev`，也不要期望根目录 `.env` 配置开发栈。
 
 每行只能包含一个 `KEY=value`。`.env` 必须使用纯 URL，不能粘贴 Markdown 链接：
 
 ```dotenv
 # 正确
-APP_ALLOWED_ORIGINS=https://app.example.com
+APP_ALLOWED_ORIGINS=https://172.20.0.10:8443
 
 # 错误
-APP_ALLOWED_ORIGINS=[https://app.example.com](https://app.example.com)
+APP_ALLOWED_ORIGINS=[https://172.20.0.10:8443](https://172.20.0.10:8443)
 ```
 
 限制凭据文件权限：
@@ -67,8 +72,8 @@ chmod 600 .env backend/.env
 应用在进程启动时读取并缓存配置。先校验最终 Compose model，再重新创建相关容器：
 
 ```bash
-docker compose -f docker-compose.dev.yml config --quiet
-docker compose -f docker-compose.dev.yml \
+docker compose --env-file .env.dev -f docker-compose.dev.yml config --quiet
+docker compose --env-file .env.dev -f docker-compose.dev.yml \
   up -d --build --force-recreate migrate api frontend
 ```
 
@@ -78,24 +83,22 @@ docker compose -f docker-compose.dev.yml \
 
 ### 如何让局域网中的其他设备访问开发前端？
 
-浏览器 Origin 由对外可见的协议、主机和宿主机端口组成。如果 Vite 在容器内仍监听
-`5173`，但宿主机发布为 `8173`，应保留其他生成环境变量并调整以下既有配置：
+浏览器 Origin 由对外可见的协议、主机和宿主机端口组成。复制 `.env.dev.example`，将仅用于
+文档的私有地址替换为开发主机的真实局域网地址，并让所有后端依赖继续只绑定回环地址：
 
-```yaml
-services:
-  migrate:
-    environment: &backend-env
-      APP_ALLOWED_ORIGINS: >-
-        http://localhost:8173,http://127.0.0.1:8173,http://192.168.0.169:8173
-      APP_SESSION_COOKIE_SECURE: "false"
-  api:
-    environment: *backend-env
-  frontend:
-    ports:
-      - "8173:5173"
+```dotenv
+DEV_FRONTEND_BIND_HOST=0.0.0.0
+DEV_FRONTEND_PORT=8173
+DEV_API_BIND_HOST=127.0.0.1
+DEV_DB_BIND_HOST=127.0.0.1
+DEV_APP_ALLOWED_ORIGINS=http://localhost:8173,http://127.0.0.1:8173,http://172.20.0.10:8173
 ```
 
-然后访问 `http://192.168.0.169:8173`，并将示例地址替换为服务器稳定的局域网地址。
+```bash
+docker compose --env-file .env.dev -f docker-compose.dev.yml up -d --build
+```
+
+然后访问 `http://172.20.0.10:8173`，并将示例地址替换为服务器稳定的局域网地址。
 不要把 `0.0.0.0` 当作浏览器 URL 或允许的 Origin；它只是监听地址。
 
 ### 什么情况会返回 `origin_not_allowed`？
@@ -117,15 +120,15 @@ services:
 对比浏览器 Network 面板中的 `Origin` 请求头和 API 容器的实际值：
 
 ```bash
-docker compose -f docker-compose.dev.yml exec -T api \
+docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T api \
   printenv APP_ALLOWED_ORIGINS
 ```
 
 直接使用 `curl` 时必须显式发送 Origin：
 
 ```bash
-curl -H 'Origin: http://192.168.0.169:8173' \
-  http://192.168.0.169:8173/api/v1/auth/session
+curl -H 'Origin: http://172.20.0.10:8173' \
+  http://172.20.0.10:8173/api/v1/auth/session
 ```
 
 ### 认证能否同时支持 HTTP 和 HTTPS？
@@ -143,7 +146,8 @@ Cookie，不应削弱这项生产校验。
   -> http://api:8000
 ```
 
-此时 `APP_ALLOWED_ORIGINS` 应为 `https://app.example.com`。除非受控网络明确要求其他绑定，
+此时 `APP_ALLOWED_ORIGINS` 使用仅供文档说明的 `https://172.20.0.10:8443`；请替换为浏览器
+实际访问的精确外部 Origin。除非受控网络明确要求其他绑定，
 生产 gateway 应保持 `APP_BIND_HOST=127.0.0.1`。
 
 ## 认证请求与 Cookie
@@ -177,10 +181,10 @@ JSON 合约为：
 
 ```bash
 curl -i -c .cookies.txt \
-  -H 'Origin: http://192.168.0.169:8173' \
+  -H 'Origin: http://172.20.0.10:8173' \
   -H 'Content-Type: application/json' \
   --data '{"email":"developer@example.com","password":"correct-horse-battery","workspaceName":"Personal"}' \
-  http://192.168.0.169:8173/api/v1/auth/signup
+  http://172.20.0.10:8173/api/v1/auth/signup
 ```
 
 成功状态为 `201 Created`；重复邮箱返回 `409`，而不是 `422`。
@@ -243,6 +247,9 @@ docker inspect PROJECT-gateway-1
 代理未被信任时认证仍可能工作，但多个用户会共享代理地址对应的限流 key，并可能共同耗尽
 一个 bucket。
 
+开发环境默认让 `DEV_FORWARDED_ALLOW_IPS` 为空，不猜测 Docker subnet。只有检查直接 peer
+后才能设置；它与 `origin_not_allowed` 无关，也不是注册成功的必要条件。
+
 ### 如何生成 `APP_AUTH_RATE_LIMIT_SECRET`？
 
 为每个环境生成并持久保存独立随机值：
@@ -275,15 +282,20 @@ uv run app auth purge-expired
 
 ```bash
 docker compose ls
-docker compose -f docker-compose.dev.yml ps
-docker compose -f docker-compose.dev.yml config --quiet
-docker compose -f docker-compose.dev.yml exec -T api printenv \
+docker compose --env-file .env.dev -f docker-compose.dev.yml ps
+docker compose --env-file .env.dev -f docker-compose.dev.yml config --quiet
+docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T api app config check --json
+docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T api printenv \
   APP_ENV APP_ALLOWED_ORIGINS APP_SESSION_COOKIE_SECURE \
   APP_SIGNUP_ENABLED FORWARDED_ALLOW_IPS
-docker compose -f docker-compose.dev.yml logs --tail=100 api frontend
+docker compose --env-file .env.dev -f docker-compose.dev.yml logs --tail=100 api frontend
 curl -i http://localhost:5173/health/ready
 python harness/check.py
 ```
+
+每个 API 响应都带有 `X-Request-ID`。当公开响应出于安全原因省略字段级校验详情时，可用
+该标识在 API 结构化日志中查找对应记录。`app config check --json` 只输出脱敏后的有效配置
+摘要，绝不会打印数据库 URL、密码、Cookie、session/CSRF token 或限流秘密。
 
 需要把缺失的 uv、npm 或 Docker 视为失败时，使用严格模式：
 

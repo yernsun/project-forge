@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import cast
 
 import pytest
@@ -14,6 +15,7 @@ from starlette.requests import Request
 from typer.testing import CliRunner
 
 from app.api.errors import install_error_handlers
+from app.api.observability import RequestContextMiddleware
 from app.auth.api import SignupRequest, _set_session_cookies, get_unsafe_session
 from app.auth.errors import (
     AuthRateLimitedError,
@@ -130,7 +132,7 @@ def test_production_auth_settings_fail_closed() -> None:
             allowed_origins_csv="https://app.example.com",
             session_cookie_secure=False,
             auth_rate_limit_secret="x" * 32,
-            forwarded_allow_ips_csv="10.0.0.10",
+            forwarded_allow_ips_csv="172.20.0.20",
         )
     with pytest.raises(ValidationError, match="unique 32-byte"):
         Settings(
@@ -139,7 +141,7 @@ def test_production_auth_settings_fail_closed() -> None:
             allowed_origins_csv="https://app.example.com",
             session_cookie_secure=True,
             auth_rate_limit_secret=DEVELOPMENT_RATE_LIMIT_SECRET,
-            forwarded_allow_ips_csv="10.0.0.10",
+            forwarded_allow_ips_csv="172.20.0.20",
         )
 
 
@@ -150,12 +152,12 @@ def test_production_uses_host_cookies_and_disables_signup_by_default() -> None:
         allowed_origins_csv="https://app.example.com/",
         session_cookie_secure=True,
         auth_rate_limit_secret="x" * 32,
-        forwarded_allow_ips_csv="10.0.0.10,10.0.1.0/24",
+        forwarded_allow_ips_csv="172.20.0.20,172.20.1.0/24",
     )
     assert settings.session_cookie_name == f"__Host-{COOKIE_PREFIX}-session"
     assert settings.csrf_cookie_name == f"__Host-{COOKIE_PREFIX}-csrf"
     assert settings.allowed_origins == frozenset({"https://app.example.com"})
-    assert settings.forwarded_allow_ips == ("10.0.0.10", "10.0.1.0/24")
+    assert settings.forwarded_allow_ips == ("172.20.0.20", "172.20.1.0/24")
     assert not settings.is_signup_enabled
 
     development = Settings(session_cookie_secure=True)
@@ -170,7 +172,7 @@ def test_issued_cookie_attributes_are_host_only_strict_and_secret_aware() -> Non
         allowed_origins_csv="https://app.example.com",
         session_cookie_secure=True,
         auth_rate_limit_secret="x" * 32,
-        forwarded_allow_ips_csv="10.0.0.10",
+        forwarded_allow_ips_csv="172.20.0.20",
     )
     now = utc_now()
     issued = IssuedSession(
@@ -266,7 +268,7 @@ def test_production_rejects_non_origin_allowlist_values() -> None:
 
 
 @pytest.mark.parametrize(
-    "value", ["", "*", "0.0.0.0/0", "::/0", "not-an-ip", "10.0.0.1/24"]
+    "value", ["", "*", "0.0.0.0/0", "::/0", "not-an-ip", "172.20.0.1/24"]
 )
 def test_production_requires_explicit_valid_trusted_proxies(value: str) -> None:
     with pytest.raises(ValidationError, match=r"trusted proxy|FORWARDED_ALLOW_IPS"):
@@ -374,9 +376,18 @@ async def test_rate_limit_transaction_commits_before_rejection() -> None:
     assert factory.exits == [None]
 
 
-def test_auth_validation_errors_redact_input_and_disable_caching() -> None:
+def test_auth_validation_errors_redact_input_and_disable_caching(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     app = FastAPI()
     install_error_handlers(app)
+    app.add_middleware(RequestContextMiddleware)
+    warnings: list[dict[str, object]] = []
+
+    def capture_warning(_message: str, *, extra: dict[str, object]) -> None:
+        warnings.append(extra)
+
+    monkeypatch.setattr("app.api.errors.logger.warning", capture_warning)
 
     @app.post("/api/v1/auth/signup")
     async def validate_signup(_request: SignupRequest) -> None:
@@ -385,6 +396,7 @@ def test_auth_validation_errors_redact_input_and_disable_caching() -> None:
     secret = "too-short"
     response = TestClient(app).post(
         "/api/v1/auth/signup",
+        headers={"X-Request-ID": "auth-validation-1"},
         json={
             "email": "person@example.com",
             "password": secret,
@@ -400,6 +412,29 @@ def test_auth_validation_errors_redact_input_and_disable_caching() -> None:
     assert secret not in response.text
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["pragma"] == "no-cache"
+    assert response.headers["x-request-id"] == "auth-validation-1"
+    assert warnings[0]["request_id"] == "auth-validation-1"
+    assert secret not in str(warnings)
+    assert "person@example.com" not in str(warnings)
+    assert "Example" not in str(warnings)
+
+
+def test_duplicate_request_ids_are_replaced() -> None:
+    app = FastAPI()
+    app.add_middleware(RequestContextMiddleware)
+
+    @app.get("/")
+    async def index() -> dict[str, bool]:
+        return {"ok": True}
+
+    response = TestClient(app).get(
+        "/",
+        headers=[("X-Request-ID", "first"), ("X-Request-ID", "second")],
+    )
+
+    request_id = response.headers["x-request-id"]
+    assert request_id not in {"first", "second", "first, second"}
+    assert len(request_id) == 32
 
 
 def test_general_validation_errors_keep_fastapi_contract_and_cache_policy() -> None:
@@ -518,6 +553,41 @@ def test_auth_purge_cli_exposes_dry_run() -> None:
     result = CliRunner().invoke(cli_app, ["auth", "purge-expired", "--help"])
     assert result.exit_code == 0
     assert "--dry-run" in unstyle(result.stdout)
+
+
+def test_config_cli_reports_only_redacted_effective_settings() -> None:
+    result = CliRunner().invoke(cli_app, ["config", "check", "--json"])
+    assert result.exit_code == 0, result.output
+    summary = json.loads(result.stdout)
+    assert summary["environment"] == "development"
+    assert summary["authentication"]["allowed_origins"] == ["http://localhost:5173"]
+    assert "database_url" not in result.stdout
+    assert DEVELOPMENT_RATE_LIMIT_SECRET not in result.stdout
+
+
+def test_config_cli_sanitizes_invalid_environment_values() -> None:
+    database_secret = "database-password-must-not-leak"
+    rate_limit_secret = "rate-limit-secret-must-not-leak-123456789"
+    result = CliRunner().invoke(
+        cli_app,
+        ["config", "check", "--json"],
+        env={
+            "APP_ENV": "production",
+            "DATABASE_URL": f"postgresql://app:{database_secret}@db:5432/app",
+            "APP_ALLOWED_ORIGINS": "http://172.20.0.10:8173",
+            "APP_AUTH_RATE_LIMIT_SECRET": rate_limit_secret,
+            "APP_SESSION_COOKIE_SECURE": "true",
+            "FORWARDED_ALLOW_IPS": "127.0.0.1",
+        },
+    )
+
+    assert result.exit_code == 2
+    report = json.loads(result.stdout)
+    assert report["ok"] is False
+    assert report["errors"]
+    assert database_secret not in result.output
+    assert rate_limit_secret not in result.output
+    assert "postgresql://" not in result.output
 
 
 def test_fixed_window_is_stable_within_the_window() -> None:

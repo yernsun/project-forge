@@ -196,6 +196,26 @@ describe('mounted authentication components', () => {
     queryClient.clear()
   })
 
+  it('validates authentication fields locally before calling the API', async () => {
+    const { pinia, queryClient, testI18n } = testState()
+    const wrapper = mount(AuthPanel, {
+      global: {
+        plugins: [pinia, testI18n, [VueQueryPlugin, { queryClient }]],
+        stubs: uiStubs,
+      },
+    })
+
+    await wrapper.get('[data-testid="auth-email"]').setValue('invalid-email')
+    await wrapper.get('#auth-password').setValue('secret')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(loginMock).not.toHaveBeenCalled()
+    expect(wrapper.get('[role="alert"]').text()).toContain(enUS.auth.errors.email_invalid)
+    wrapper.unmount()
+    queryClient.clear()
+  })
+
   it('renders a stable authentication error code with localized copy', async () => {
     loginMock.mockRejectedValue(
       new ApiRequestError(401, 'invalid_credentials', 'backend prose must stay hidden'),

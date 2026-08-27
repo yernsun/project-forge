@@ -31,7 +31,7 @@ Optional capabilities are additive:
 
 Generated backends support Python `>=3.11` and use Python 3.13 in Docker by default, with FastAPI,
 Pydantic v2, Psycopg 3, PostgreSQL 16, forward migrations, and repository-owned SQL. Generated
-frontends support Node LTS `>=22.12 <23 || >=24 <25` and use Node 24 for Docker and generated CI,
+frontends support Node LTS `>=22.13 <23 || >=24 <25` and use Node 24 for Docker and generated CI,
 with Vue 3, Vite, TypeScript, PrimeVue, Vue Query, Pinia for client-owned state, and
 `zh-CN`/`en-US` catalogs.
 
@@ -42,7 +42,7 @@ with Vue 3, Vite, TypeScript, PrimeVue, Vue Query, Pinia for client-owned state,
 | Python | Always | `>=3.11` |
 | uv | Always | Current stable |
 | Git | Managed evolution | Current stable |
-| Node.js and npm | Frontend/full-stack | Node LTS `>=22.12 <23 || >=24 <25` |
+| Node.js and npm | Frontend/full-stack | Node LTS `>=22.13 <23 || >=24 <25` |
 | Docker Engine and Compose v2 | Compose workflows | Current stable |
 
 Check the machine before creating a project:
@@ -120,7 +120,8 @@ cd ../acme-console
 git add .
 git commit -m "chore: initialize with Project Forge"
 python harness/check.py
-docker compose -f docker-compose.dev.yml up --build
+cp .env.dev.example .env.dev
+docker compose --env-file .env.dev -f docker-compose.dev.yml up --build
 ```
 
 Open:
@@ -261,8 +262,10 @@ files are preserved, while managed files are reconciled against the recorded bas
 
 ## Upgrade a generated project
 
-`update --check` compares the project with the template bundled in the currently installed CLI. It
-never contacts GitHub or another remote:
+`update --check` renders and compares the project with the template bundled in the currently
+installed CLI. State schema 2 records a deterministic template digest, so refreshed template
+content is detected even when the public version remains `0.2.0`. The command never contacts GitHub
+or another remote and never writes managed files, state, baseline, or `.rej` files:
 
 ```bash
 uv tool upgrade project-forge
@@ -311,9 +314,29 @@ HARNESS_STRICT=1 HARNESS_DOCKER=1 python harness/check.py
 Start the generated development stack:
 
 ```bash
-docker compose -f docker-compose.dev.yml up --build
-docker compose -f docker-compose.dev.yml down
+cp .env.dev.example .env.dev
+docker compose --env-file .env.dev -f docker-compose.dev.yml up --build
+docker compose --env-file .env.dev -f docker-compose.dev.yml down
 ```
+
+Without the explicit development file, all published ports default to `127.0.0.1`; the active
+example values are loopback-safe too. Its commented LAN recipe exposes only the frontend and uses
+`172.20.0.10` as a documentation-only private address; replace it locally. Production `.env` values
+cannot leak into the isolated `DEV_*` settings. The frontend keeps API requests same-origin and
+rejects a cross-origin `VITE_API_BASE_URL`.
+
+Generated backends also expose redacted runtime diagnostics, and evented projects include bounded
+failure recovery controls:
+
+```bash
+cd backend
+uv run app config check --json
+uv run app events status --json
+uv run app events retry-failed --limit 100 --dry-run
+```
+
+Every API response carries `X-Request-ID`; structured logs use the same value without recording
+request bodies or credentials.
 
 Production Compose expects an external TLS terminator and binds its gateway to `127.0.0.1:8080` by
 default. Replace every placeholder before starting:
@@ -332,7 +355,7 @@ production use.
 
 | Code | Meaning |
 |---:|---|
-| `0` | Success; `update --check` found no newer installed template |
+| `0` | Success; `update --check` found no installed-template difference |
 | `1` | Required doctor check failed, or `update --check` found an update |
 | `2` | Invalid usage, project state, dirty Git, or another runtime error |
 | `3` | Update conflict; only `.rej` files were written |
@@ -363,10 +386,10 @@ current branch explicitly:
 uv tool install --force --python 3.11 git+https://github.com/yernsun/project-forge.git
 ```
 
-`update --check` intentionally does not query a remote repository. This compatibility refresh keeps
-the version at `0.2.0`, so an older `0.2.0` project has no version delta for `--check` to report;
-after refreshing the tool, run `project-forge update PATH` directly. The normal clean-Git and
-all-or-nothing conflict safeguards still apply.
+`update --check` intentionally does not query a remote repository. After reinstalling the tool, it
+uses the stored template digest plus an actual dry render/three-way comparison, so it can report a
+same-version `0.2.0` refresh. Run `project-forge update PATH` when the check reports a difference.
+The normal clean-Git and all-or-nothing conflict safeguards still apply.
 
 ### Managed evolution reports a dirty worktree
 
@@ -380,8 +403,9 @@ of acceptance; the Docker CLI, Compose v2, and daemon must all be available.
 
 ### Frontend tools reject the Node version
 
-Use Node LTS `>=22.12 <23 || >=24 <25`. Node 22.0–22.11 is below
-[Vite's runtime floor](https://vite.dev/guide/). Node 23 and 25 are EOL, while Node 26 remains outside
+Use Node LTS `>=22.13 <23 || >=24 <25`. Node 22.0–22.12 is below the maintained
+[ESLint 10 runtime floor](https://eslint.org/docs/latest/use/getting-started); Vite itself permits
+22.12+. Node 23 and 25 are EOL, while Node 26 remains outside
 the support contract until a future Project Forge release explicitly adopts it after it reaches LTS.
 
 ## Develop Project Forge
@@ -390,7 +414,16 @@ the support contract until a future Project Forge release explicitly adopts it a
 uv sync --all-groups
 uv run --frozen python harness/check.py
 uv run --frozen python harness/manage_openapi_contracts.py --check
+uv run --frozen pip-audit
+cd src/project_forge/template/frontend
+npm audit --audit-level=high
 ```
+
+Root tests enforce branch coverage, generated strict harnesses enforce backend/frontend coverage,
+and CI adds macOS/Windows CLI smoke tests, Python 3.11–3.14, supported Node LTS lines, dependency
+audits, a non-TLS internal production-Compose readiness smoke, wheel isolation, and authenticated
+Compose E2E. Release tags are additionally checked against `pyproject.toml`; the release workflow
+builds checksums, an SBOM, and provenance while the public version remains `0.2.0`.
 
 After an intentional API route or DTO change:
 

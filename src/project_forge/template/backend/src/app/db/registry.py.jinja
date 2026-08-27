@@ -4,6 +4,7 @@ from app.db.migration_engine import Migration
 {% endif %}from app.db.migrations.auth_security import AUTH_SECURITY
 {% endif %}from app.db.migrations.core import CORE
 {% if evented %}from app.db.migrations.event_idempotency import EVENT_IDEMPOTENCY
+from app.db.migrations.event_reliability import EVENT_RELIABILITY
 from app.db.migrations.events import EVENTS
 {% endif %}{% if sample %}from app.db.migrations.items import ITEMS
 {% endif %}
@@ -16,4 +17,5 @@ MIGRATIONS: tuple[Migration, ...] = (
 {% endif %}
 {% endif %}{% if evented %}    EVENTS,
     EVENT_IDEMPOTENCY,
+    EVENT_RELIABILITY,
 {% endif %})

@@ -78,6 +78,26 @@ class _FileSnapshot:
     mode: int | None
 
 
+@dataclass(frozen=True)
+class UpdatePreview:
+    """Read-only result of comparing a project with the installed template."""
+
+    changed_paths: tuple[Path, ...]
+    conflict_paths: tuple[Path, ...]
+    identity_changed: bool
+
+    @property
+    def update_available(self) -> bool:
+        return self.identity_changed or bool(self.changed_paths) or bool(self.conflict_paths)
+
+
+@dataclass(frozen=True)
+class _UpdatePlan:
+    changes: tuple[_PlannedChange, ...]
+    rejections: tuple[_PlannedRejection, ...]
+    new_root: Path
+
+
 def template_path() -> Path:
     return Path(__file__).resolve().parent / "template"
 
@@ -110,7 +130,7 @@ def _prune(rendered: Path, state: ProjectState) -> None:
         _remove(rendered / "backend/src/app/db/migrations/auth_items.py")
     if state.has_backend and not state.evented:
         _remove(rendered / "backend/src/app/events")
-        for migration in ("events.py", "event_idempotency.py"):
+        for migration in ("events.py", "event_idempotency.py", "event_reliability.py"):
             _remove(rendered / "backend/src/app/db/migrations" / migration)
         _remove(rendered / "backend/tests/test_evented.py")
     if not state.sample:
@@ -183,6 +203,7 @@ def _copy_render(rendered: Path, destination: Path) -> None:
 def initialize_project(
     state: ProjectState, destination: Path, *, initialize_git: bool = True
 ) -> None:
+    state = state.with_current_template_identity()
     destination = destination.resolve()
     if destination.exists() and any(destination.iterdir()):
         raise ProjectForgeError(f"destination is not empty: {destination}")
@@ -439,121 +460,148 @@ def _all_relative_files(roots: Iterable[Path]) -> list[Path]:
     return sorted(paths, key=lambda item: item.as_posix())
 
 
+def _plan_controlled_update(
+    project_dir: Path,
+    state: ProjectState,
+    work: Path,
+) -> _UpdatePlan:
+    old_root = work / "old"
+    new_root = work / "new"
+    old_root.mkdir()
+    _extract_baseline(project_dir, old_root)
+    render_fresh(state, new_root)
+    changes: list[_PlannedChange] = []
+    rejections: list[_PlannedRejection] = []
+    for relative in _all_relative_files((old_root, new_root)):
+        if relative.as_posix() == STATE_FILE or relative.parts[0] in {".git", METADATA_DIR}:
+            continue
+        old = old_root / relative
+        new = new_root / relative
+        current = project_dir / relative
+        obstacle = _project_path_obstacle(project_dir, relative)
+        if obstacle is not None:
+            message = (
+                f"Cannot update {relative.as_posix()}: managed paths must be regular files "
+                f"under real directories; found {obstacle.relative_to(project_dir)}.\n"
+            )
+            rejections.append(_PlannedRejection(relative, message.encode("utf-8")))
+            continue
+        old_exists = old.is_file()
+        new_exists = new.is_file()
+        current_exists = current.is_file()
+
+        if not old_exists and not new_exists:
+            continue
+        if old_exists and new_exists and _same(old, new):
+            continue
+        if current_exists and new_exists and _same(current, new):
+            continue
+        if old_exists and current_exists and _same(old, current):
+            if new_exists:
+                changes.append(
+                    _PlannedChange(relative, "write", new.read_bytes(), _file_mode(new))
+                )
+            else:
+                changes.append(_PlannedChange(relative, "delete"))
+            continue
+        if not old_exists and new_exists and not current_exists:
+            changes.append(
+                _PlannedChange(relative, "write", new.read_bytes(), _file_mode(new))
+            )
+            continue
+        if old_exists and not new_exists and not current_exists:
+            continue
+        if old_exists and new_exists and current_exists:
+            old_mode = _file_mode(old)
+            current_mode = _file_mode(current)
+            new_mode = _file_mode(new)
+            merged_mode = _merge_mode(old_mode, current_mode, new_mode)
+            if merged_mode is None:
+                rejections.append(
+                    _PlannedRejection(
+                        relative,
+                        _mode_conflict(relative, old_mode, current_mode, new_mode),
+                    )
+                )
+                continue
+
+            old_content = old.read_bytes()
+            current_content = current.read_bytes()
+            new_content = new.read_bytes()
+            if current_content == new_content:
+                merged_content = current_content
+            elif current_content == old_content:
+                merged_content = new_content
+            elif new_content == old_content:
+                merged_content = current_content
+            elif all(_is_text(path) for path in (old, new, current)):
+                merged, content = _merge_text(current, old, new)
+                if not merged:
+                    rejections.append(_PlannedRejection(relative, content.encode("utf-8")))
+                    continue
+                merged_content = content.encode("utf-8")
+            else:
+                rejections.append(_PlannedRejection(relative, new_content))
+                continue
+
+            if merged_content != current_content or merged_mode != current_mode:
+                changes.append(_PlannedChange(relative, "write", merged_content, merged_mode))
+            continue
+        if new_exists:
+            rejections.append(_PlannedRejection(relative, new.read_bytes()))
+        else:
+            message = f"Template removed {relative.as_posix()}, but the project changed it.\n"
+            rejections.append(_PlannedRejection(relative, message.encode("utf-8")))
+
+    return _UpdatePlan(tuple(changes), tuple(rejections), new_root)
+
+
+def preview_controlled_update(
+    project_dir: Path,
+    current_state: ProjectState,
+    target_state: ProjectState,
+) -> UpdatePreview:
+    """Compare with the installed template without changing files or writing rejections."""
+
+    project_dir = project_dir.resolve()
+    require_clean_git(project_dir)
+    with tempfile.TemporaryDirectory(prefix="project-forge-check-") as temp_dir:
+        plan = _plan_controlled_update(project_dir, target_state, Path(temp_dir))
+        return UpdatePreview(
+            changed_paths=tuple(change.relative for change in plan.changes),
+            conflict_paths=tuple(rejection.relative for rejection in plan.rejections),
+            identity_changed=(
+                current_state.schema_version != target_state.schema_version
+                or current_state.template_version != target_state.template_version
+                or current_state.template_digest != target_state.template_digest
+            ),
+        )
+
+
 def apply_controlled_update(project_dir: Path, state: ProjectState) -> list[Path]:
     project_dir = project_dir.resolve()
     require_clean_git(project_dir)
     with tempfile.TemporaryDirectory(prefix="project-forge-update-") as temp_dir:
         work = Path(temp_dir)
-        old_root = work / "old"
-        new_root = work / "new"
-        old_root.mkdir()
-        _extract_baseline(project_dir, old_root)
-        render_fresh(state, new_root)
-        changes: list[_PlannedChange] = []
-        rejections: list[_PlannedRejection] = []
-        for relative in _all_relative_files((old_root, new_root)):
-            if relative.as_posix() == STATE_FILE or relative.parts[0] in {".git", METADATA_DIR}:
-                continue
-            old = old_root / relative
-            new = new_root / relative
-            current = project_dir / relative
-            obstacle = _project_path_obstacle(project_dir, relative)
-            if obstacle is not None:
-                message = (
-                    f"Cannot update {relative.as_posix()}: managed paths must be regular files "
-                    f"under real directories; found {obstacle.relative_to(project_dir)}.\n"
-                )
-                rejections.append(_PlannedRejection(relative, message.encode("utf-8")))
-                continue
-            old_exists = old.is_file()
-            new_exists = new.is_file()
-            current_exists = current.is_file()
-
-            if not old_exists and not new_exists:
-                continue
-            if old_exists and new_exists and _same(old, new):
-                continue
-            if current_exists and new_exists and _same(current, new):
-                continue
-            if old_exists and current_exists and _same(old, current):
-                if new_exists:
-                    changes.append(
-                        _PlannedChange(relative, "write", new.read_bytes(), _file_mode(new))
-                    )
-                else:
-                    changes.append(_PlannedChange(relative, "delete"))
-                continue
-            if not old_exists and new_exists and not current_exists:
-                changes.append(
-                    _PlannedChange(relative, "write", new.read_bytes(), _file_mode(new))
-                )
-                continue
-            if old_exists and not new_exists and not current_exists:
-                continue
-            if old_exists and new_exists and current_exists:
-                old_mode = _file_mode(old)
-                current_mode = _file_mode(current)
-                new_mode = _file_mode(new)
-                merged_mode = _merge_mode(old_mode, current_mode, new_mode)
-                if merged_mode is None:
-                    rejections.append(
-                        _PlannedRejection(
-                            relative,
-                            _mode_conflict(relative, old_mode, current_mode, new_mode),
-                        )
-                    )
-                    continue
-
-                old_content = old.read_bytes()
-                current_content = current.read_bytes()
-                new_content = new.read_bytes()
-                if current_content == new_content:
-                    merged_content = current_content
-                elif current_content == old_content:
-                    merged_content = new_content
-                elif new_content == old_content:
-                    merged_content = current_content
-                elif all(_is_text(path) for path in (old, new, current)):
-                    merged, content = _merge_text(current, old, new)
-                    if not merged:
-                        rejections.append(
-                            _PlannedRejection(relative, content.encode("utf-8"))
-                        )
-                        continue
-                    merged_content = content.encode("utf-8")
-                else:
-                    rejections.append(_PlannedRejection(relative, new_content))
-                    continue
-
-                if merged_content != current_content or merged_mode != current_mode:
-                    changes.append(
-                        _PlannedChange(relative, "write", merged_content, merged_mode)
-                    )
-                continue
-            if new_exists:
-                rejections.append(_PlannedRejection(relative, new.read_bytes()))
-            else:
-                message = f"Template removed {relative.as_posix()}, but the project changed it.\n"
-                rejections.append(_PlannedRejection(relative, message.encode("utf-8")))
-
-        if rejections:
+        plan = _plan_controlled_update(project_dir, state, work)
+        if plan.rejections:
             return [
                 _write_project_rejection(project_dir, rejection)
-                for rejection in rejections
+                for rejection in plan.rejections
             ]
 
         staged_project = work / "staged-project"
-        _write_baseline(new_root, staged_project)
+        _write_baseline(plan.new_root, staged_project)
         staged_baseline = staged_project / METADATA_DIR / BASELINE_FILE
         state_path = project_dir / STATE_FILE
         baseline_path = project_dir / METADATA_DIR / BASELINE_FILE
         snapshots = [
-            *(_snapshot_file(project_dir / change.relative) for change in changes),
+            *(_snapshot_file(project_dir / change.relative) for change in plan.changes),
             _snapshot_file(state_path),
             _snapshot_file(baseline_path),
         ]
         try:
-            for change in changes:
+            for change in plan.changes:
                 current = project_dir / change.relative
                 if change.action == "write":
                     if change.content is None or change.mode is None:  # pragma: no cover

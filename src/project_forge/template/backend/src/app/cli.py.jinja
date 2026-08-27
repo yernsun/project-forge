@@ -1,26 +1,48 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-{% if auth -%}
 from typing import Annotated
-{% endif %}
+
 import typer
+from pydantic import ValidationError
 
 {% if auth %}from app.auth.service import AuthService
 {% endif %}from app.db.migration_engine import MigrationRunner
 from app.db.pool import create_pool
 from app.db.registry import MIGRATIONS
-from app.settings import get_settings
-{% if auth %}from app.uow.factory import UnitOfWorkFactory
+{% if evented %}from app.events.service import OutboxService
+{% endif %}from app.settings import Settings, get_settings
+{% if auth or evented %}from app.uow.factory import UnitOfWorkFactory
 {% endif %}
 app = typer.Typer(no_args_is_help=True)
 migrate = typer.Typer(help="Manage the immutable migration DAG")
 app.add_typer(migrate, name="migrate")
+configuration = typer.Typer(help="Validate and inspect redacted runtime configuration")
+app.add_typer(configuration, name="config")
 {% if auth %}auth = typer.Typer(help="Operate authentication persistence")
 app.add_typer(auth, name="auth")
+{% endif %}{% if evented %}events = typer.Typer(help="Inspect and recover event delivery state")
+app.add_typer(events, name="events")
 {% endif %}
+
+
+def _safe_configuration_errors(error: ValidationError) -> list[dict[str, str]]:
+    """Serialize validation failures without environment values or exception context."""
+
+    errors: list[dict[str, str]] = []
+    for detail in error.errors(include_url=False, include_context=False, include_input=False):
+        location = ".".join(str(part) for part in detail.get("loc", ())) or "settings"
+        errors.append(
+            {
+                "location": location,
+                "type": str(detail.get("type", "validation_error")),
+                "message": str(detail.get("msg", "invalid value")),
+            }
+        )
+    return errors
 
 
 @asynccontextmanager
@@ -43,6 +65,42 @@ def migration_status() -> None:
                 typer.echo(f"{entry.state.value:8} {entry.migration_id} {entry.checksum[:12]}")
 
     asyncio.run(run())
+
+
+@configuration.command("check")
+def configuration_check(
+    as_json: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON")] = False,
+) -> None:
+    """Validate effective settings and print only non-secret values."""
+
+    try:
+        summary = Settings().safe_summary()
+    except ValidationError as error:
+        errors = _safe_configuration_errors(error)
+        if as_json:
+            typer.echo(json.dumps({"ok": False, "errors": errors}, sort_keys=True))
+        else:
+            typer.secho("configuration invalid", fg=typer.colors.RED, err=True)
+            for detail in errors:
+                typer.echo(
+                    f"- {detail['location']}: {detail['message']} ({detail['type']})",
+                    err=True,
+                )
+        raise typer.Exit(code=2) from error
+    if as_json:
+        typer.echo(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+        return
+    typer.echo(f"environment={summary['environment']}")
+    typer.echo(f"database_configured={str(summary['database_configured']).lower()}")
+{% if evented %}    typer.echo(f"redis_configured={str(summary['redis_configured']).lower()}")
+{% endif %}{% if auth %}    authentication = summary["authentication"]
+    if not isinstance(authentication, dict):  # pragma: no cover - safe_summary invariant
+        raise RuntimeError("authentication summary is invalid")
+    typer.echo("allowed_origins=" + ",".join(authentication["allowed_origins"]))
+    typer.echo(f"cookies_secure={str(authentication['cookies_secure']).lower()}")
+    typer.echo(f"signup_enabled={str(authentication['signup_enabled']).lower()}")
+    typer.echo("trusted_proxies=" + ",".join(authentication["trusted_proxies"]))
+{% endif %}
 
 
 @migrate.command("validate")
@@ -87,6 +145,57 @@ def auth_purge_expired(
     sessions, rate_limits = asyncio.run(run())
     action = "would_purge" if dry_run else "purged"
     typer.echo(f"{action} sessions={sessions} rate_limits={rate_limits}")
+
+{% endif %}{% if evented %}@events.command("status")
+def event_status(
+    as_json: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON")] = False,
+) -> None:
+    """Show non-payload outbox delivery counts."""
+
+    async def run() -> dict[str, int]:
+        settings = get_settings()
+        pool = create_pool(settings.database_url)
+        await pool.open()
+        try:
+            status = await OutboxService(UnitOfWorkFactory(pool)).status()
+            return status.model_dump(mode="json")
+        finally:
+            await pool.close()
+
+    summary = asyncio.run(run())
+    if as_json:
+        typer.echo(json.dumps(summary, sort_keys=True))
+        return
+    for name in ("ready", "deferred", "failed", "published"):
+        typer.echo(f"{name}={summary[name]}")
+
+
+@events.command("retry-failed")
+def event_retry_failed(
+    limit: Annotated[int, typer.Option("--limit", min=1, max=1000)] = 100,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Count parked rows without scheduling retries"),
+    ] = False,
+) -> None:
+    """Schedule a bounded batch of parked outbox rows for another delivery attempt."""
+
+    async def run() -> tuple[int, bool]:
+        settings = get_settings()
+        pool = create_pool(settings.database_url)
+        await pool.open()
+        try:
+            service = OutboxService(UnitOfWorkFactory(pool))
+            if dry_run:
+                status = await service.status()
+                return min(status.failed, limit), False
+            retried = await service.retry_failed(limit)
+            return len(retried), True
+        finally:
+            await pool.close()
+
+    count, changed = asyncio.run(run())
+    typer.echo(f"{'retried' if changed else 'would_retry'}={count}")
 
 
 {% endif %}def main() -> None:

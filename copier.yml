@@ -41,10 +41,15 @@ default_locale:
 
 schema_version:
   type: int
-  default: 1
+  default: 2
   when: false
 
 template_version:
   type: str
   default: 0.2.0
+  when: false
+
+template_digest:
+  type: str
+  default: ""
   when: false

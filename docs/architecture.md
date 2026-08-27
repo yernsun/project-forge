@@ -7,6 +7,11 @@ Project Forge has three layers:
 3. The update engine compares the previous template baseline, the current project, and the new
    desired render. One-sided changes apply automatically; double-sided changes become `.rej`.
 
+State schema 2 also records a deterministic SHA-256 digest of the packaged rendering source. A
+read-only `update --check` always performs the isolated render and three-way comparison, so it can
+detect same-version template refreshes without touching managed files, state, baseline, or conflict
+artifacts. Apply and preview share one update planner to prevent their semantics from drifting.
+
 The generated backend follows the enforced dependency direction
 `API → Service → Unit of Work → Repository → PostgreSQL`. API DTOs, domain models, credential
 records, and database row mapping remain separate. A Service opens the transaction, a single-use
@@ -28,7 +33,17 @@ protect every authenticated unsafe method. PostgreSQL also owns HMAC-pseudonymiz
 login and signup limits. Production fails closed unless cookies are Secure, origins are HTTPS, and a
 dedicated rate-limit secret is configured.
 
+Generated HTTP adapters attach or safely propagate `X-Request-ID` and emit structured access and
+validation logs without bodies, credentials, cookies, or secrets. `app config check --json` exposes
+only a redacted effective-settings summary. Event relays reclaim stale pending deliveries, bound
+attempts, park failed outbox rows, and require explicit operator replay after remediation.
+
 The generated frontend keeps server state in Vue Query, client-owned locale and per-user workspace
 selection in Pinia, DTO types in one of four real FastAPI OpenAPI contracts, and locale state in one
 i18n module that also updates PrimeVue's locale object. Its application shell has explicit loading,
 guest, and authenticated states; protected queries do not mount for guests.
+
+CI treats every valid render as a product: Python grammar and generator tests run across supported
+Python releases, representative CLI flows smoke-test macOS and Windows, frontend checks use only
+supported Node LTS lines, and dependency audits, coverage gates, Compose readiness, wheel isolation,
+checksums, SBOM, and provenance protect the delivery path.

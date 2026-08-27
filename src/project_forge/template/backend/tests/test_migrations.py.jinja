@@ -10,6 +10,7 @@ from app.db.migration_engine import Migration, MigrationError, MigrationRunner, 
 {% endif %}from app.db.migrations.auth_security import AUTH_SECURITY
 {% endif %}{% if auth or sample or evented %}from app.db.migrations.core import CORE
 {% endif %}{% if evented %}from app.db.migrations.event_idempotency import EVENT_IDEMPOTENCY
+from app.db.migrations.event_reliability import EVENT_RELIABILITY
 from app.db.migrations.events import EVENTS
 {% endif %}{% if sample %}from app.db.migrations.items import ITEMS
 {% endif %}from app.db.types import DbConnection
@@ -93,11 +94,14 @@ async def test_readiness_repository_requires_a_current_schema(
 
 
 {% if evented %}def test_event_idempotency_migration_is_forward_only() -> None:
-    result = ordered_migrations((EVENT_IDEMPOTENCY, EVENTS, CORE))
+    result = ordered_migrations((EVENT_RELIABILITY, EVENT_IDEMPOTENCY, EVENTS, CORE))
     assert [entry.migration_id for entry in result] == [
         "0001_core",
         "0030_events",
         "0031_event_idempotency",
+        "0032_event_reliability",
     ]
     assert "RENAME COLUMN message_id TO event_id" in EVENT_IDEMPOTENCY.up_sql
+    assert "failed_at" in EVENT_RELIABILITY.up_sql
+    assert "published_at IS NULL AND failed_at IS NULL" in EVENT_RELIABILITY.up_sql
 {% endif %}

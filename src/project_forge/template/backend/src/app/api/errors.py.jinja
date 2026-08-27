@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+
+from app.api.observability import current_request_id
+
+logger = logging.getLogger("app.validation")
 
 
 def _is_auth_related_path(path: str) -> bool:
@@ -47,12 +52,33 @@ def _safe_validation_errors(
     return safe_errors
 
 
+def _diagnostic_validation_errors(
+    error: RequestValidationError,
+) -> list[dict[str, Any]]:
+    """Keep diagnostic shape while dropping submitted values and validator context."""
+
+    return [
+        {key: detail[key] for key in ("type", "loc", "msg") if key in detail}
+        for detail in error.errors()
+    ]
+
+
 def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(RequestValidationError)
     async def request_validation_failed(
         request: Request, error: RequestValidationError
     ) -> JSONResponse:
         if _is_auth_related_path(request.url.path):
+            logger.warning(
+                "request validation failed",
+                extra={
+                    "event": "request_validation_failed",
+                    "request_id": current_request_id(),
+                    "method": request.method,
+                    "path": request.url.path,
+                    "validation_errors": _diagnostic_validation_errors(error),
+                },
+            )
             return JSONResponse(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 content={

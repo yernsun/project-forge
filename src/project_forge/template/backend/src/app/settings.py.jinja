@@ -37,6 +37,12 @@ class Settings(BaseSettings):
 {% if evented %}    redis_url: str = Field(
         default="redis://localhost:6379/0", validation_alias="REDIS_URL"
     )
+    event_relay_poll_seconds: float = Field(
+        default=0.5, ge=0.05, le=60, validation_alias="APP_EVENT_RELAY_POLL_SECONDS"
+    )
+    event_relay_max_attempts: int = Field(
+        default=10, ge=1, le=100, validation_alias="APP_EVENT_RELAY_MAX_ATTEMPTS"
+    )
 {% endif %}{% if auth %}    allowed_origins_csv: str = Field(
         default="http://localhost:5173", validation_alias="APP_ALLOWED_ORIGINS"
     )
@@ -173,6 +179,32 @@ class Settings(BaseSettings):
             return self.signup_enabled
         return self.app_env is not AppEnvironment.PRODUCTION
 
+    def safe_summary(self) -> dict[str, object]:
+        """Return effective runtime settings without credentials or secret values."""
+
+        summary: dict[str, object] = {
+            "environment": self.app_env.value,
+            "database_configured": bool(self.database_url),
+{% if evented %}            "redis_configured": bool(self.redis_url),
+            "event_relay": {
+                "poll_seconds": self.event_relay_poll_seconds,
+                "max_attempts": self.event_relay_max_attempts,
+            },
+{% endif %}            "authentication": {
+                "allowed_origins": sorted(self.allowed_origins),
+                "cookies_secure": self.cookies_secure,
+                "signup_enabled": self.is_signup_enabled,
+                "session_ttl_seconds": self.session_ttl_seconds,
+                "trusted_proxies": list(self.forwarded_allow_ips),
+                "rate_limit_secret_configured": (
+                    self.auth_rate_limit_secret.get_secret_value()
+                    != DEVELOPMENT_RATE_LIMIT_SECRET
+                    and len(self.auth_rate_limit_secret.get_secret_value().encode()) >= 32
+                ),
+            },
+        }
+        return summary
+
     @property
     def session_cookie_name(self) -> str:
         prefix = f"{COOKIE_PREFIX}-session"
@@ -182,6 +214,19 @@ class Settings(BaseSettings):
     def csrf_cookie_name(self) -> str:
         prefix = f"{COOKIE_PREFIX}-csrf"
         return f"__Host-{prefix}" if self.app_env is AppEnvironment.PRODUCTION else prefix
+{% else %}
+    def safe_summary(self) -> dict[str, object]:
+        """Return effective runtime settings without credentials."""
+
+        return {
+            "environment": self.app_env.value,
+            "database_configured": bool(self.database_url),
+{% if evented %}            "redis_configured": bool(self.redis_url),
+            "event_relay": {
+                "poll_seconds": self.event_relay_poll_seconds,
+                "max_attempts": self.event_relay_max_attempts,
+            },
+{% endif %}        }
 {% endif %}
 
 

@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -38,13 +41,13 @@ jobs:
 {% endif %}{% elif sample %}    env:
       FRONTEND_API_UPSTREAM: http://host.docker.internal:8000
 {% endif %}    steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 {% if profile != 'frontend' %}
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.13"
 {% endif %}{% if profile != 'backend' %}
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
           cache: npm
@@ -60,6 +63,28 @@ jobs:
           HARNESS_STRICT: "1"
           HARNESS_DOCKER: "1"
         run: python harness/check.py
+
+  security-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+{% if profile != 'frontend' %}      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.13"
+      - name: Audit locked backend environment
+        working-directory: backend
+        run: |
+          uv sync --frozen --all-groups{% if auth %} --extra auth{% endif %}{% if evented %} --extra evented{% endif %}
+          uv run --frozen --no-sync pip-audit
+{% endif %}{% if profile != 'backend' %}      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Audit frontend dependencies
+        working-directory: frontend
+        run: npm audit --audit-level=high
+{% endif %}
 {% if profile == 'fullstack' and auth and sample %}
 
   auth-compose-e2e:
@@ -67,8 +92,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
           cache: npm
@@ -101,4 +126,41 @@ jobs:
       - name: Stop Compose stack
         if: always()
         run: docker compose -f docker-compose.dev.yml down --volumes --remove-orphans
+
+  production-compose-smoke:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Write isolated production smoke configuration
+        run: |
+          printf '%s\n' \
+            'POSTGRES_PASSWORD=ci-postgres-password' \
+            'DATABASE_URL=postgresql://app:ci-postgres-password@db:5432/app' \
+            'APP_ALLOWED_ORIGINS=https://172.20.0.10:8443' \
+            'APP_AUTH_RATE_LIMIT_SECRET=ci-production-rate-limit-secret-at-least-32-bytes' \
+            'APP_SIGNUP_ENABLED=false' \
+            'FORWARDED_ALLOW_IPS=127.0.0.1' \
+            'APP_BIND_HOST=127.0.0.1' > .env.ci
+      - name: Validate and start internal production Compose topology
+        run: |
+          docker compose --env-file .env.ci config --quiet
+          docker compose --env-file .env.ci up -d --build
+      - name: Wait for production topology readiness
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:8080/health/ready >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose --env-file .env.ci ps
+          exit 1
+      - name: Show production Compose logs
+        if: always()
+        run: docker compose --env-file .env.ci logs --no-color --tail=200
+      - name: Stop production Compose stack
+        if: always()
+        run: docker compose --env-file .env.ci down --volumes --remove-orphans
 {% endif %}

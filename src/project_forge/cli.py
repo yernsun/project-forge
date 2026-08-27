@@ -29,6 +29,7 @@ from project_forge.renderer import (
     copy_skill,
     git_worktree_status,
     initialize_project,
+    preview_controlled_update,
     tool_version,
     validate_baseline,
 )
@@ -95,7 +96,7 @@ def _supported_node_lts(output: str) -> bool:
     parts = _version_parts(output)
     if parts is None:
         return False
-    return (22, 12, 0) <= parts < (23, 0, 0) or (24, 0, 0) <= parts < (25, 0, 0)
+    return (22, 13, 0) <= parts < (23, 0, 0) or (24, 0, 0) <= parts < (25, 0, 0)
 
 
 def _tool_check(
@@ -182,7 +183,7 @@ def _doctor_checks(profile: Profile, *, require_docker: bool) -> list[DoctorChec
             "node",
             "node",
             required=has_frontend,
-            requirement=">=22.12,<23 || >=24,<25 (LTS only)",
+            requirement=">=22.13,<23 || >=24,<25 (LTS only)",
             compatible=_supported_node_lts,
         ),
         _tool_check("npm", "npm", required=has_frontend),
@@ -263,6 +264,7 @@ def _fail(error: Exception) -> None:
 
 
 def _apply(project_dir: Path, state: ProjectState) -> None:
+    state = state.with_current_template_identity()
     conflicts = apply_controlled_update(project_dir, state)
     if conflicts:
         typer.secho("Update stopped with conflicts; current files were preserved:", fg="yellow")
@@ -433,7 +435,7 @@ def update_project(
         False,
         "--check",
         help=(
-            "Only compare the project with this installed template version; "
+            "Render and compare with this installed template without changing the project; "
             "do not check a remote repository"
         ),
     ),
@@ -442,13 +444,22 @@ def update_project(
     try:
         root = project_dir.resolve()
         state = load_state(root)
-        project_version, installed_version = _template_versions(state)
+        _template_versions(state)
+        target_state = state.with_current_template_identity()
         if check:
-            available = installed_version > project_version
-            typer.echo("update available" if available else "up to date")
-            raise typer.Exit(code=1 if available else 0)
-        state = state.model_copy(update={"template_version": __version__})
-        _apply(root, state)
+            preview = preview_controlled_update(root, state, target_state)
+            if preview.conflict_paths:
+                typer.echo(
+                    f"update conflicts ({len(preview.conflict_paths)} managed paths); "
+                    "run update to write .rej diagnostics"
+                )
+                raise typer.Exit(code=3)
+            if preview.update_available:
+                typer.echo(f"update available ({len(preview.changed_paths)} managed paths)")
+                raise typer.Exit(code=1)
+            typer.echo("up to date")
+            return
+        _apply(root, target_state)
     except typer.Exit:
         raise
     except (ProjectForgeError, ValidationError, ValueError, OSError) as error:

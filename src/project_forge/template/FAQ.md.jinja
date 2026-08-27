@@ -21,8 +21,8 @@ Check which stack and command are actually running:
 
 ```bash
 docker compose ls
-docker compose -f docker-compose.dev.yml ps
-docker compose -f docker-compose.dev.yml logs --tail=100 api frontend
+docker compose --env-file .env.dev -f docker-compose.dev.yml ps
+docker compose --env-file .env.dev -f docker-compose.dev.yml logs --tail=100 api frontend
 ```
 
 The generated development API runs `fastapi dev`; the production image defaults to `fastapi run`.
@@ -33,27 +33,34 @@ Changing only `APP_ENV` does not change the server command or Compose topology.
 | Workflow | Configuration source |
 |---|---|
 | Production Compose | Root `.env`, expanded by `docker-compose.yml` |
-| Development Compose | Values declared in `docker-compose.dev.yml` |
+| Development Compose | Safe defaults in `docker-compose.dev.yml`, optionally overridden by `.env.dev` |
 | Backend run directly on the host | `backend/.env` |
 | Frontend run directly on the host | `frontend/.env` |
 
-The root `.env` does not override a literal value in `docker-compose.dev.yml`. Inspect the resolved
-configuration instead of assuming a file was loaded:
+Production and development variables are deliberately isolated: production uses names such as
+`APP_ALLOWED_ORIGINS`, while development Compose reads `DEV_APP_ALLOWED_ORIGINS`. Start by copying
+the tracked, secret-free example and always pass it explicitly:
 
 ```bash
-docker compose -f docker-compose.dev.yml config
-docker compose -f docker-compose.dev.yml exec -T api printenv \
+cp .env.dev.example .env.dev
+docker compose --env-file .env.dev -f docker-compose.dev.yml config
+docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T api printenv \
   APP_ENV APP_ALLOWED_ORIGINS APP_SESSION_COOKIE_SECURE APP_SIGNUP_ENABLED
 ```
+
+Without `.env.dev`, every generated host port binds to `127.0.0.1`. Its active example values are
+also loopback-safe; the commented LAN recipe exposes only the frontend while PostgreSQL, Redis, and
+the API remain loopback-only. Never copy a production secret into `.env.dev`, and never expect the
+root `.env` to configure the development stack.
 
 Keep one `KEY=value` assignment per line. An `.env` file must contain a plain URL, not Markdown:
 
 ```dotenv
 # Correct
-APP_ALLOWED_ORIGINS=https://app.example.com
+APP_ALLOWED_ORIGINS=https://172.20.0.10:8443
 
 # Incorrect
-APP_ALLOWED_ORIGINS=[https://app.example.com](https://app.example.com)
+APP_ALLOWED_ORIGINS=[https://172.20.0.10:8443](https://172.20.0.10:8443)
 ```
 
 Protect files containing credentials:
@@ -68,8 +75,8 @@ Application settings are read at process startup and cached. Validate the resolv
 then recreate the affected containers:
 
 ```bash
-docker compose -f docker-compose.dev.yml config --quiet
-docker compose -f docker-compose.dev.yml \
+docker compose --env-file .env.dev -f docker-compose.dev.yml config --quiet
+docker compose --env-file .env.dev -f docker-compose.dev.yml \
   up -d --build --force-recreate migrate api frontend
 ```
 
@@ -79,25 +86,23 @@ docker compose -f docker-compose.dev.yml \
 
 ### How do I expose the development frontend to another device on my LAN?
 
-The browser origin is the externally visible scheme, host, and host port. If Vite still listens on
-container port `5173` but the host publishes port `8173`, adjust these existing entries while
-retaining the other generated environment values:
+The browser origin is the externally visible scheme, host, and host port. Copy `.env.dev.example`,
+replace the documentation-only private address with the development host's actual LAN address, and
+keep every backend dependency on loopback:
 
-```yaml
-services:
-  migrate:
-    environment: &backend-env
-      APP_ALLOWED_ORIGINS: >-
-        http://localhost:8173,http://127.0.0.1:8173,http://192.168.0.169:8173
-      APP_SESSION_COOKIE_SECURE: "false"
-  api:
-    environment: *backend-env
-  frontend:
-    ports:
-      - "8173:5173"
+```dotenv
+DEV_FRONTEND_BIND_HOST=0.0.0.0
+DEV_FRONTEND_PORT=8173
+DEV_API_BIND_HOST=127.0.0.1
+DEV_DB_BIND_HOST=127.0.0.1
+DEV_APP_ALLOWED_ORIGINS=http://localhost:8173,http://127.0.0.1:8173,http://172.20.0.10:8173
 ```
 
-Then browse to `http://192.168.0.169:8173`. Replace the address with the server's stable LAN address.
+```bash
+docker compose --env-file .env.dev -f docker-compose.dev.yml up -d --build
+```
+
+Then browse to `http://172.20.0.10:8173`. Replace the address with the server's stable LAN address.
 Do not use `0.0.0.0` as a browser URL or allowed origin; it is only a listen address.
 
 ### What causes `origin_not_allowed`?
@@ -119,15 +124,15 @@ with an allowed-origin `Referer` fallback. The match is exact after removing a t
 Compare the browser's Network panel `Origin` request header with the value inside the API container:
 
 ```bash
-docker compose -f docker-compose.dev.yml exec -T api \
+docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T api \
   printenv APP_ALLOWED_ORIGINS
 ```
 
 For direct `curl` calls, send the header explicitly:
 
 ```bash
-curl -H 'Origin: http://192.168.0.169:8173' \
-  http://192.168.0.169:8173/api/v1/auth/session
+curl -H 'Origin: http://172.20.0.10:8173' \
+  http://172.20.0.10:8173/api/v1/auth/session
 ```
 
 ### Can authentication support both HTTP and HTTPS?
@@ -145,7 +150,8 @@ browser https://app.example.com
   -> http://api:8000
 ```
 
-`APP_ALLOWED_ORIGINS` is `https://app.example.com` in that example. Keep the production gateway on
+`APP_ALLOWED_ORIGINS` is the documentation-only `https://172.20.0.10:8443` in that example; replace
+it with the exact external browser origin. Keep the production gateway on
 `APP_BIND_HOST=127.0.0.1` unless a controlled network explicitly requires another binding.
 
 ## Authentication requests and cookies
@@ -180,10 +186,10 @@ known-good LAN test is:
 
 ```bash
 curl -i -c .cookies.txt \
-  -H 'Origin: http://192.168.0.169:8173' \
+  -H 'Origin: http://172.20.0.10:8173' \
   -H 'Content-Type: application/json' \
   --data '{"email":"developer@example.com","password":"correct-horse-battery","workspaceName":"Personal"}' \
-  http://192.168.0.169:8173/api/v1/auth/signup
+  http://172.20.0.10:8173/api/v1/auth/signup
 ```
 
 Expected success is `201 Created`. A duplicate email returns `409` instead of `422`.
@@ -248,6 +254,10 @@ docker inspect PROJECT-gateway-1
 If the proxy is not trusted, authentication still works, but many users may share the proxy's client
 key and exhaust one rate-limit bucket together.
 
+Development defaults `DEV_FORWARDED_ALLOW_IPS` to empty rather than guessing a Docker subnet. Set it
+only after inspecting the immediate peer; it is unrelated to `origin_not_allowed` and is not needed
+to make signup function.
+
 ### How should `APP_AUTH_RATE_LIMIT_SECRET` be created?
 
 Generate a stable, environment-specific random value:
@@ -282,15 +292,21 @@ Use redacted output; never print secrets or complete cookies:
 
 ```bash
 docker compose ls
-docker compose -f docker-compose.dev.yml ps
-docker compose -f docker-compose.dev.yml config --quiet
-docker compose -f docker-compose.dev.yml exec -T api printenv \
+docker compose --env-file .env.dev -f docker-compose.dev.yml ps
+docker compose --env-file .env.dev -f docker-compose.dev.yml config --quiet
+docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T api app config check --json
+docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T api printenv \
   APP_ENV APP_ALLOWED_ORIGINS APP_SESSION_COOKIE_SECURE \
   APP_SIGNUP_ENABLED FORWARDED_ALLOW_IPS
-docker compose -f docker-compose.dev.yml logs --tail=100 api frontend
+docker compose --env-file .env.dev -f docker-compose.dev.yml logs --tail=100 api frontend
 curl -i http://localhost:5173/health/ready
 python harness/check.py
 ```
+
+Every API response includes `X-Request-ID`. When a public response intentionally omits sensitive
+validation details, use that identifier to find the matching structured API log. `app config check
+--json` reports only a redacted effective configuration summary; it never prints database URLs,
+passwords, cookies, session/CSRF tokens, or the rate-limit secret.
 
 Use `HARNESS_STRICT=1` when missing `uv`, npm, or Docker must fail rather than skip:
 

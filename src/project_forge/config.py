@@ -10,6 +10,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from project_forge import __version__
+from project_forge.identity import CURRENT_STATE_SCHEMA_VERSION, current_template_digest
 
 _UNSAFE_PROJECT_NAME_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
 
@@ -56,9 +57,19 @@ class ProjectState(BaseModel):
 
     model_config = ConfigDict(extra="forbid", validate_assignment=True, use_enum_values=False)
 
-    schema_version: int = Field(default=1, ge=1, description="State file schema version")
+    schema_version: int = Field(
+        default=CURRENT_STATE_SCHEMA_VERSION,
+        ge=1,
+        le=CURRENT_STATE_SCHEMA_VERSION,
+        description="State file schema version",
+    )
     template_version: str = Field(
         default=__version__, min_length=1, description="Last successfully applied template version"
+    )
+    template_digest: str | None = Field(
+        default=None,
+        pattern=r"^sha256:[0-9a-f]{64}$",
+        description="Content identity of the last successfully applied packaged template",
     )
     project_name: str = Field(min_length=1, max_length=100, description="Human-facing name")
     project_slug: str = Field(
@@ -110,6 +121,9 @@ class ProjectState(BaseModel):
         _reject_unsafe_project_name_characters(project_name)
         resolved_sample = sample if sample is not None else profile is not Profile.FRONTEND
         return cls(
+            schema_version=CURRENT_STATE_SCHEMA_VERSION,
+            template_version=__version__,
+            template_digest=current_template_digest(),
             project_name=project_name.strip(),
             project_slug=slugify(project_slug or project_name),
             profile=profile,
@@ -121,6 +135,15 @@ class ProjectState(BaseModel):
 
     def copier_data(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
+
+    def with_current_template_identity(self) -> Self:
+        return self.model_copy(
+            update={
+                "schema_version": CURRENT_STATE_SCHEMA_VERSION,
+                "template_version": __version__,
+                "template_digest": current_template_digest(),
+            }
+        )
 
     @property
     def has_backend(self) -> bool:

@@ -15,8 +15,31 @@ from typer.testing import CliRunner
 from project_forge import __version__
 from project_forge.cli import app
 from project_forge.config import Profile, ProjectState, dump_state, load_state
+from project_forge.identity import current_template_digest
+from project_forge.renderer import initialize_project
 
 runner = CliRunner()
+
+
+def commit_project(project: Path, message: str = "fixture") -> None:
+    subprocess.run(["git", "-C", str(project), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(project),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            message,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def write_baseline(
@@ -386,7 +409,8 @@ def test_doctor_enforces_python_311_floor(
     ("node_version", "expected_exit_code", "expected_status"),
     [
         ("v22.11.99", 1, "fail"),
-        ("v22.12.0", 0, "pass"),
+        ("v22.12.99", 1, "fail"),
+        ("v22.13.0", 0, "pass"),
         ("v22.99.0", 0, "pass"),
         ("v23.11.1", 1, "fail"),
         ("v24.19.0", 0, "pass"),
@@ -419,7 +443,7 @@ def test_doctor_enforces_supported_node_lts_runtime_ranges(
     assert result.exit_code == expected_exit_code
     node_check = check_map(json.loads(result.stdout))["node"]
     assert node_check["status"] == expected_status
-    assert ">=22.12,<23 || >=24,<25 (LTS only)" in node_check["message"]
+    assert ">=22.13,<23 || >=24,<25 (LTS only)" in node_check["message"]
 
 
 @pytest.mark.parametrize(
@@ -564,16 +588,72 @@ def test_update_check_compares_with_installed_template_only(
     tmp_path: Path,
 ) -> None:
     project = tmp_path / "check"
-    project.mkdir()
-    state = ProjectState.create("Check").model_copy(
-        update={"template_version": template_version}
-    )
+    state = ProjectState.create("Check")
+    initialize_project(state, project)
+    state = load_state(project).model_copy(update={"template_version": template_version})
     (project / ".project-forge.yml").write_text(dump_state(state), encoding="utf-8")
+    commit_project(project)
 
     result = runner.invoke(app, ["update", str(project), "--check"])
 
     assert result.exit_code == expected_code
-    assert result.stdout.strip() == expected_output
+    assert expected_output in result.stdout
+
+
+def test_update_check_detects_same_version_template_digest_without_mutation(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "digest-check"
+    initialize_project(ProjectState.create("Digest Check"), project)
+    state_path = project / ".project-forge.yml"
+    state = load_state(project).model_copy(update={"template_digest": f"sha256:{'0' * 64}"})
+    state_path.write_text(dump_state(state), encoding="utf-8")
+    commit_project(project)
+    baseline_before = (project / ".project-forge/baseline.tar.gz").read_bytes()
+
+    result = runner.invoke(app, ["update", str(project), "--check"])
+
+    assert result.exit_code == 1
+    assert "update available" in result.stdout
+    assert load_state(project).template_digest == f"sha256:{'0' * 64}"
+    assert (project / ".project-forge/baseline.tar.gz").read_bytes() == baseline_before
+    assert not list(project.rglob("*.rej"))
+
+    applied = runner.invoke(app, ["update", str(project)])
+    assert applied.exit_code == 0, applied.output
+    assert load_state(project).template_digest == current_template_digest()
+
+
+def test_same_version_update_migrates_legacy_state_schema_and_missing_digest(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "legacy-state"
+    initialize_project(ProjectState.create("Legacy State"), project)
+    state_path = project / ".project-forge.yml"
+    legacy_lines = [
+        "schema_version: 1" if line.startswith("schema_version:") else line
+        for line in state_path.read_text(encoding="utf-8").splitlines()
+        if not line.startswith("template_digest:")
+    ]
+    state_path.write_text("\n".join(legacy_lines) + "\n", encoding="utf-8")
+    commit_project(project)
+
+    legacy = load_state(project)
+    assert legacy.schema_version == 1
+    assert legacy.template_version == "0.2.0"
+    assert legacy.template_digest is None
+
+    preview = runner.invoke(app, ["update", str(project), "--check"])
+    assert preview.exit_code == 1
+    assert load_state(project).schema_version == 1
+    assert load_state(project).template_digest is None
+
+    applied = runner.invoke(app, ["update", str(project)])
+    assert applied.exit_code == 0, applied.output
+    upgraded = load_state(project)
+    assert upgraded.schema_version == 2
+    assert upgraded.template_version == "0.2.0"
+    assert upgraded.template_digest == current_template_digest()
 
 
 @pytest.mark.parametrize("check", [False, True])

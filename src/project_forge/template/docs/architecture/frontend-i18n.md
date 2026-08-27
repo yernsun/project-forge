@@ -34,17 +34,22 @@ origin handling, errors, and `401` behavior cannot diverge between features.
 
 ## Development and deployment
 
-The frontend toolchain supports the Node.js LTS ranges `>=22.12 <23 || >=24 <25`; generated CI and
+The frontend toolchain supports the Node.js LTS ranges `>=22.13 <23 || >=24 <25`; generated CI and
 the frontend Docker builder use Node 24. Project Forge validates the supported Node 22 and Node 24
-LTS lines. The lower bound matches Vite's runtime requirement, while the checked-in Node 22 type
-definitions intentionally prevent application code from relying on APIs missing from the oldest
-supported runtime. Odd-numbered releases and new even-numbered releases that have not reached LTS
-are outside the support contract.
+LTS lines. Node 22.13 is the maintained ESLint 10 floor (Vite permits 22.12+), while the checked-in
+Node 22 type definitions intentionally prevent application code from relying on APIs missing from
+the oldest supported major. Odd-numbered releases and new even-numbered releases that have not
+reached LTS are outside the support contract.
 
 For direct local development, copy `frontend/.env.example` to `frontend/.env`. Keep
 `VITE_API_BASE_URL` empty to use the same-origin Vite proxy and set `VITE_API_PROXY_TARGET` to the
 backend origin. In full-stack Compose this target is `http://api:8000`; a frontend-only sample uses
 `FRONTEND_API_PROXY_TARGET` to reach an external API.
+
+The client rejects a `VITE_API_BASE_URL` that resolves to a different browser origin. This preserves
+the cookie, CSRF, and gateway contract; configure the Vite/gateway upstream instead of bypassing it.
+Authentication forms perform localized client-side email, password, and workspace validation before
+calling the API, while the strict backend DTO remains authoritative. Passwords are never trimmed.
 
 Production keeps the browser API base URL empty and proxies `/api` at the internal gateway. That
 gateway listens on `${APP_BIND_HOST:-127.0.0.1}:8080` and must remain behind an external TLS
@@ -67,7 +72,7 @@ codes map one-to-one to `auth.errors.<code>` so transport failures never surface
 
 ## Acceptance
 
-Run `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`, and—against a running
+Run `npm run lint`, `npm run typecheck`, `npm run test:coverage`, `npm run build`, and—against a running
 full-stack auth environment—`npm run e2e`. The browser flow covers signup, automatic workspace
 selection, item creation, session restoration after reload, and logout. An `auth+sample` full-stack
 project also emits a dedicated CI job that starts development Compose after validation, waits for

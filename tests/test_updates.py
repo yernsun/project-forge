@@ -211,10 +211,10 @@ type DbPool = AsyncConnectionPool[DbConnection]
         .replace(b'requires-python = ">=3.11"', b'requires-python = ">=3.13"', 1),
         frontend_package_path: (project / frontend_package_path)
         .read_bytes()
-        .replace(b'">=22.12 <23 || >=24 <25"', b'">=22.12 <23"'),
+        .replace(b'">=22.13 <23 || >=24 <25"', b'">=22.12 <23"'),
         frontend_lock_path: (project / frontend_lock_path)
         .read_bytes()
-        .replace(b'">=22.12 <23 || >=24 <25"', b'">=22.12 <23"'),
+        .replace(b'">=22.13 <23 || >=24 <25"', b'">=22.12 <23"'),
         frontend_dockerfile_path: (project / frontend_dockerfile_path)
         .read_bytes()
         .replace(b"FROM node:24-bookworm-slim", b"FROM node:22-bookworm-slim"),
@@ -235,7 +235,7 @@ type DbPool = AsyncConnectionPool[DbConnection]
     assert result.exit_code == 0, result.output
     assert "TypeAlias" in (project / types_path).read_text(encoding="utf-8")
     assert ">=3.11" in (project / backend_project_path).read_text(encoding="utf-8")
-    assert '"node": ">=22.12 <23 || >=24 <25"' in (
+    assert '"node": ">=22.13 <23 || >=24 <25"' in (
         project / frontend_package_path
     ).read_text(
         encoding="utf-8"
@@ -276,6 +276,19 @@ def test_double_modified_file_produces_rejection_without_overwrite(tmp_path: Pat
         encoding="utf-8",
     )
     commit_all(project, "user title")
+    state_path = project / ".project-forge.yml"
+    state_before = state_path.read_bytes()
+    baseline_before = archive.read_bytes()
+
+    preview = CliRunner().invoke(app, ["update", str(project), "--check"])
+
+    assert preview.exit_code == 3
+    assert "conflict" in preview.output.lower()
+    assert not list(project.rglob("*.rej"))
+    assert project_readme.read_text(encoding="utf-8").startswith("# User title")
+    assert state_path.read_bytes() == state_before
+    assert archive.read_bytes() == baseline_before
+
     result = CliRunner().invoke(app, ["update", str(project)])
 
     assert result.exit_code == 3

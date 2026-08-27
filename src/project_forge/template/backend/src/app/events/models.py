@@ -29,3 +29,10 @@ class EventEnvelope(StrictDomainModel):
 class OutboxRecord(StrictDomainModel):
     envelope: EventEnvelope = Field(description="Event to publish")
     attempts: int = Field(ge=0, description="Publish attempts")
+
+
+class OutboxStatus(StrictDomainModel):
+    ready: int = Field(ge=0, description="Rows eligible for immediate relay")
+    deferred: int = Field(ge=0, description="Rows waiting for retry or held by a relay")
+    failed: int = Field(ge=0, description="Rows parked after exhausting retries")
+    published: int = Field(ge=0, description="Rows already published")

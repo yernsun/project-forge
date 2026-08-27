@@ -13,9 +13,12 @@ from project_forge.renderer import render_fresh
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_ACTION_REFS = {
-    "actions/checkout": "actions/checkout@v7.0.1",
-    "actions/setup-node": "actions/setup-node@v7.0.0",
-    "astral-sh/setup-uv": "astral-sh/setup-uv@v10.0.1",
+    "actions/checkout": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "actions/setup-node": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+    "astral-sh/setup-uv": "astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d",
+    "actions/attest-build-provenance": (
+        "actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f"
+    ),
 }
 
 REPRESENTATIVE_STATES = (
@@ -106,12 +109,12 @@ def test_static_generated_harnesses_pass(state: ProjectState, tmp_path: Path) ->
     node_steps = [
         step
         for step in validate["steps"]
-        if step.get("uses") == "actions/setup-node@v7.0.0"
+        if step.get("uses") == EXPECTED_ACTION_REFS["actions/setup-node"]
     ]
     python_steps = [
         step
         for step in validate["steps"]
-        if step.get("uses") == "astral-sh/setup-uv@v10.0.1"
+        if step.get("uses") == EXPECTED_ACTION_REFS["astral-sh/setup-uv"]
     ]
     if state.has_backend:
         assert python_steps and all(
@@ -126,6 +129,8 @@ def test_static_generated_harnesses_pass(state: ProjectState, tmp_path: Path) ->
 
     emits_auth_e2e = state.profile is Profile.FULLSTACK and state.auth and state.sample
     assert ("auth-compose-e2e" in workflow["jobs"]) is emits_auth_e2e
+    assert ("production-compose-smoke" in workflow["jobs"]) is emits_auth_e2e
+    assert "security-audit" in workflow["jobs"]
     if emits_auth_e2e:
         auth_flow = (
             destination / "frontend/tests/e2e/auth-flow.e2e.ts"
@@ -152,6 +157,13 @@ def test_static_generated_harnesses_pass(state: ProjectState, tmp_path: Path) ->
             "Show Compose logs",
             "Stop Compose stack",
         }
+        production = workflow["jobs"]["production-compose-smoke"]
+        production_commands = "\n".join(
+            str(step.get("run", "")) for step in production["steps"]
+        )
+        assert "APP_ALLOWED_ORIGINS=https://172.20.0.10:8443" in production_commands
+        assert "docker compose --env-file .env.ci up -d --build" in production_commands
+        assert "http://127.0.0.1:8080/health/ready" in production_commands
 
 
 def test_top_level_harness_reports_python_311_syntax_cleanly(tmp_path: Path) -> None:
@@ -194,7 +206,7 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
     contract_node_steps = [
         step
         for step in contracts["steps"]
-        if step.get("uses") == "actions/setup-node@v7.0.0"
+        if step.get("uses") == EXPECTED_ACTION_REFS["actions/setup-node"]
     ]
     assert contract_node_steps[0]["with"]["node-version"] == "24"
     contract_commands = "\n".join(str(step.get("run", "")) for step in contracts["steps"])
@@ -212,7 +224,7 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
     generated_node_steps = [
         step
         for step in generated["steps"]
-        if step.get("uses") == "actions/setup-node@v7.0.0"
+        if step.get("uses") == EXPECTED_ACTION_REFS["actions/setup-node"]
     ]
     assert generated_node_steps[0]["with"]["node-version"] == "24"
     steps = "\n".join(str(step.get("run", "")) for step in generated["steps"])
@@ -222,7 +234,7 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
     e2e_node_steps = [
         step
         for step in e2e["steps"]
-        if step.get("uses") == "actions/setup-node@v7.0.0"
+        if step.get("uses") == EXPECTED_ACTION_REFS["actions/setup-node"]
     ]
     assert e2e_node_steps[0]["with"]["node-version"] == "24"
     e2e_steps = "\n".join(str(step.get("run", "")) for step in e2e["steps"])
@@ -253,6 +265,33 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
 
     package = workflow["jobs"]["package-command"]
     assert package["strategy"]["matrix"]["python-version"] == ["3.11", "3.14"]
+
+    platform = workflow["jobs"]["generator-platform-smoke"]
+    assert platform["strategy"]["matrix"]["os"] == ["macos-latest", "windows-latest"]
+    assert "--no-cov" in "\n".join(str(step.get("run", "")) for step in platform["steps"])
+
+    security = workflow["jobs"]["security-audit"]
+    security_commands = "\n".join(str(step.get("run", "")) for step in security["steps"])
+    assert "pip-audit" in security_commands
+    assert "npm audit --audit-level=high" in security_commands
+
+    production = workflow["jobs"]["production-compose-smoke"]
+    production_commands = "\n".join(
+        str(step.get("run", "")) for step in production["steps"]
+    )
+    assert "APP_ALLOWED_ORIGINS=https://172.20.0.10:8443" in production_commands
+    assert "http://127.0.0.1:8080/health/ready" in production_commands
+
+    release = yaml.safe_load(
+        (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    )
+    assert_expected_action_refs(release)
+    release_commands = "\n".join(
+        str(step.get("run", "")) for step in release["jobs"]["wheel"]["steps"]
+    )
+    assert "cyclonedx-json" in release_commands
+    assert "--no-emit-project" in release_commands
+    assert "gh release create" in release_commands
 
 
 def test_architecture_harness_rejects_boundary_bypasses(tmp_path: Path) -> None:

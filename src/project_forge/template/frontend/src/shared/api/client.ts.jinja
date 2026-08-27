@@ -30,7 +30,12 @@ export class ApiRequestError extends Error {
 {% if auth %}function cookie(name: string): string | null {
   const prefix = `${encodeURIComponent(name)}=`
   const entry = document.cookie.split(';').map((value) => value.trim()).find((value) => value.startsWith(prefix))
-  return entry ? decodeURIComponent(entry.slice(prefix.length)) : null
+  if (!entry) return null
+  try {
+    return decodeURIComponent(entry.slice(prefix.length))
+  } catch {
+    return null
+  }
 }
 
 export function readCsrfToken(): string | null {
@@ -60,7 +65,20 @@ function requestError(response: Response, error: unknown, fallbackCode: string):
 }
 
 {% endif %}
-{% if auth or sample %}const configuredBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '') || window.location.origin
+{% if auth or sample %}export function resolveApiBaseUrl(
+  configured: string | undefined,
+  browserOrigin: string = window.location.origin,
+): string {
+  const value = (configured ?? '').trim()
+  if (!value) return browserOrigin
+  const resolved = new URL(value, browserOrigin)
+  if (resolved.origin !== browserOrigin) {
+    throw new Error('VITE_API_BASE_URL must resolve to the browser origin; use the gateway or Vite proxy')
+  }
+  return resolved.href.replace(/\/$/, '')
+}
+
+const configuredBaseUrl = resolveApiBaseUrl(import.meta.env.VITE_API_BASE_URL)
 const client = createClient<paths>({
   baseUrl: configuredBaseUrl,
   credentials: 'include',

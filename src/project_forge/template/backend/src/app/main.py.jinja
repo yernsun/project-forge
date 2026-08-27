@@ -8,7 +8,8 @@ from fastapi import FastAPI
 from app.api.errors import install_error_handlers
 from app.api.health import router as health_router
 {% if sample %}from app.api.items import router as items_router
-{% endif %}{% if auth %}from app.auth.api import router as auth_router
+{% endif %}from app.api.observability import RequestContextMiddleware, configure_logging
+{% if auth %}from app.auth.api import router as auth_router
 {% endif %}from app.db.migration_engine import MigrationRunner
 from app.db.pool import create_pool
 from app.db.registry import MIGRATIONS
@@ -32,11 +33,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
+    configure_logging()
     application = FastAPI(
         title={{ (project_name ~ " API") | tojson }},
         version="0.1.0",
         lifespan=lifespan,
     )
+    application.add_middleware(RequestContextMiddleware)
     application.include_router(health_router)
 {% if sample %}    application.include_router(items_router)
 {% endif %}{% if auth %}    application.include_router(auth_router)

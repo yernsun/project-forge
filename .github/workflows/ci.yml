@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   generator-quality:
     runs-on: ubuntu-latest
@@ -13,21 +16,64 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --all-groups --frozen
       - run: uv run --frozen python harness/check.py
 
+  generator-platform-smoke:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.13"
+      - run: uv sync --all-groups --frozen
+      - name: Exercise CLI, state evolution, and atomic updates
+        run: >-
+          uv run --frozen pytest --no-cov
+          tests/test_cli.py::test_global_version_options
+          tests/test_cli.py::test_python_module_and_console_app_have_equivalent_global_contract
+          tests/test_cli.py::test_init_really_renders_each_profile
+          tests/test_cli.py::test_update_check_detects_same_version_template_digest_without_mutation
+          tests/test_cli.py::test_same_version_update_migrates_legacy_state_schema_and_missing_digest
+          tests/test_updates.py::test_junction_detection_supports_modern_and_python_311_paths
+          tests/test_updates.py::test_update_reports_invalid_baseline_as_runtime_error
+          tests/test_config.py
+
+  security-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: src/project_forge/template/frontend/package-lock.json
+      - run: uv sync --all-groups --frozen
+      - name: Audit locked Python environment
+        run: uv run --frozen pip-audit
+      - name: Audit generated frontend dependencies
+        working-directory: src/project_forge/template/frontend
+        run: npm audit --audit-level=high
+
   openapi-contracts:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.13"
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
           cache: npm
@@ -87,11 +133,11 @@ jobs:
       HARNESS_STRICT: "1"
       HARNESS_DOCKER: "1"
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.13"
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
           cache: npm
@@ -139,8 +185,8 @@ jobs:
       PROJECT_FORGE_DESTRUCTIVE_PG_TESTS: "1"
       HARNESS_STRICT: "1"
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --all-groups --frozen
@@ -168,11 +214,11 @@ jobs:
       FRONTEND_API_UPSTREAM: http://host.docker.internal:8000
       npm_config_engine_strict: "true"
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.13"
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
@@ -190,11 +236,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.13"
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
           cache: npm
@@ -237,6 +283,55 @@ jobs:
         working-directory: generated
         run: docker compose -f docker-compose.dev.yml down --volumes --remove-orphans
 
+  production-compose-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.13"
+      - run: uv sync --all-groups --frozen
+      - name: Render production topology fixture
+        run: >-
+          uv run --frozen project-forge init generated-production
+          --profile fullstack --auth --evented --sample --no-git
+      - name: Write isolated production smoke configuration
+        working-directory: generated-production
+        run: |
+          printf '%s\n' \
+            'POSTGRES_PASSWORD=ci-postgres-password' \
+            'DATABASE_URL=postgresql://app:ci-postgres-password@db:5432/app' \
+            'APP_ALLOWED_ORIGINS=https://172.20.0.10:8443' \
+            'APP_AUTH_RATE_LIMIT_SECRET=ci-production-rate-limit-secret-at-least-32-bytes' \
+            'APP_SIGNUP_ENABLED=false' \
+            'FORWARDED_ALLOW_IPS=127.0.0.1' \
+            'APP_BIND_HOST=127.0.0.1' > .env.ci
+      - name: Validate and start internal production Compose topology
+        working-directory: generated-production
+        run: |
+          docker compose --env-file .env.ci config --quiet
+          docker compose --env-file .env.ci up -d --build
+      - name: Wait for production topology readiness
+        working-directory: generated-production
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:8080/health/ready >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose --env-file .env.ci ps
+          exit 1
+      - name: Show production Compose logs
+        if: always()
+        working-directory: generated-production
+        run: docker compose --env-file .env.ci logs --no-color --tail=200
+      - name: Stop production Compose stack
+        if: always()
+        working-directory: generated-production
+        run: docker compose --env-file .env.ci down --volumes --remove-orphans
+
   package-command:
     runs-on: ubuntu-latest
     strategy:
@@ -244,8 +339,8 @@ jobs:
       matrix:
         python-version: ["3.11", "3.14"]
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --all-groups --frozen

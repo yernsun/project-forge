@@ -96,6 +96,10 @@ def test_every_valid_combination_renders(state: ProjectState, tmp_path: Path) ->
     assert (destination / "backend/src/app/db/migrations/event_idempotency.py").exists() is (
         state.has_backend and state.evented
     )
+    assert (destination / "backend/src/app/db/migrations/event_reliability.py").exists() is (
+        state.has_backend and state.evented
+    )
+    assert (destination / "backend/src/app/api/observability.py").exists() is state.has_backend
     assert (destination / "backend/src/app/domain/items.py").exists() is (
         state.has_backend and state.sample
     )
@@ -105,6 +109,15 @@ def test_every_valid_combination_renders(state: ProjectState, tmp_path: Path) ->
     assert not (destination / ".project-forge").exists()
     for cache in ("node_modules", "dist", "coverage"):
         assert not (destination / "frontend" / cache).exists()
+
+    development_environment = (destination / ".env.dev.example").read_text(encoding="utf-8")
+    assert (
+        "DEV_FRONTEND_BIND_HOST=127.0.0.1" in development_environment
+    ) is state.has_frontend
+    assert "\nDEV_FRONTEND_BIND_HOST=0.0.0.0\n" not in development_environment
+    assert ("DEV_API_BIND_HOST=127.0.0.1" in development_environment) is state.has_backend
+    assert "172.20.0.10" in development_environment
+    assert "192.168." not in development_environment
 
     for compose_file in ("docker-compose.dev.yml", "docker-compose.yml"):
         document = yaml.safe_load((destination / compose_file).read_text(encoding="utf-8"))
@@ -121,6 +134,9 @@ def test_every_valid_combination_renders(state: ProjectState, tmp_path: Path) ->
     )
     validate = workflow["jobs"]["validate"]
     assert validate["steps"]
+    assert "security-audit" in workflow["jobs"]
+    emits_production_smoke = state.profile is Profile.FULLSTACK and state.auth and state.sample
+    assert ("production-compose-smoke" in workflow["jobs"]) is emits_production_smoke
     workflow_environment = validate.get("env", {})
     if state.profile is Profile.FRONTEND and state.sample:
         assert (
@@ -217,6 +233,11 @@ def test_generated_readmes_are_runnable_and_profile_specific(
         assert ("/api/v1/auth/signup" in content) is auth
         assert ("app auth purge-expired" in content) is auth
         assert ("app.events.worker relay" in content) is evented
+        assert ("app config check --json" in content) is state.has_backend
+        assert ("app events status --json" in content) is evented
+        assert ("npm run test:coverage" in content) is state.has_frontend
+        assert "172.20.0.10" in content
+        assert "192.168." not in content
         assert ("FRONTEND_API_UPSTREAM" in content) is (
             profile is Profile.FRONTEND and sample
         )
@@ -238,8 +259,12 @@ def test_generated_readmes_are_runnable_and_profile_specific(
             "request_validation_failed",
             "workspaceName",
             "HARNESS_STRICT",
+            "172.20.0.10",
+            "X-Request-ID",
+            "app config check --json",
         ):
             assert marker in content
+        assert "192.168." not in content
         assert "{%" not in content
         assert "{{" not in content
 

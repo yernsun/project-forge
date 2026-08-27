@@ -25,7 +25,7 @@ three-way updates. Do not edit either file manually.
 
 - Git and Docker Engine with Compose v2 for the complete workflow.
 {% if profile != 'frontend' %}- Python `>=3.11` and uv for backend development.
-{% endif %}{% if profile != 'backend' %}- Node.js LTS `>=22.12 <23 || >=24 <25` and npm for frontend development.
+{% endif %}{% if profile != 'backend' %}- Node.js LTS `>=22.13 <23 || >=24 <25` and npm for frontend development.
 {% endif %}
 
 Backend containers use Python 3.13 by default. Frontend containers and generated CI use Node 24.
@@ -51,8 +51,14 @@ The sample frontend expects an API reachable from Docker at
 {% endif %}
 
 ```bash
-docker compose -f docker-compose.dev.yml up --build
+cp .env.dev.example .env.dev
+docker compose --env-file .env.dev -f docker-compose.dev.yml up --build
 ```
+
+Active example values bind every host port to `127.0.0.1`. For a LAN demonstration, use only the
+commented frontend overrides, replace the documentation address `172.20.0.10`, and add that exact
+browser origin to `DEV_APP_ALLOWED_ORIGINS`. Production `.env` and development `DEV_*` values are
+deliberately isolated.
 
 {% if profile != 'backend' %}- frontend: [http://localhost:5173](http://localhost:5173)
 {% endif %}{% if profile != 'frontend' %}- API docs: [http://localhost:8000/docs](http://localhost:8000/docs)
@@ -62,7 +68,7 @@ docker compose -f docker-compose.dev.yml up --build
 Stop the stack while preserving development volumes:
 
 ```bash
-docker compose -f docker-compose.dev.yml down
+docker compose --env-file .env.dev -f docker-compose.dev.yml down
 ```
 
 ## Run local processes
@@ -75,7 +81,7 @@ reserved for production Compose.
 Start PostgreSQL{% if evented %} and Redis{% endif %}:
 
 ```bash
-docker compose -f docker-compose.dev.yml up -d db{% if evented %} redis{% endif %}
+docker compose --env-file .env.dev -f docker-compose.dev.yml up -d db{% if evented %} redis{% endif %}
 ```
 
 In a backend terminal:
@@ -86,6 +92,7 @@ cd backend
 uv sync --frozen --all-groups{% if auth %} --extra auth{% endif %}{% if evented %} --extra evented{% endif %}
 uv run app migrate status
 uv run app migrate up
+uv run app config check --json
 uv run fastapi dev
 ```
 
@@ -104,7 +111,13 @@ Run the outbox relay in another backend terminal:
 ```bash
 cd backend
 uv run python -m app.events.worker relay
+uv run app events status --json
+uv run app events retry-failed --limit 100 --dry-run
 ```
+
+The relay reclaims stale Redis pending messages and parks PostgreSQL outbox rows after the bounded
+attempt limit. Inspect status before replaying; only explicitly retry parked rows after fixing the
+underlying failure.
 {% endif %}{% endif %}
 
 {% if profile != 'backend' %}### Frontend
@@ -118,8 +131,8 @@ npm ci
 npm run dev
 ```
 
-`VITE_API_BASE_URL` is empty by default so browser requests remain same-origin.
-`VITE_API_PROXY_TARGET` controls the local Vite proxy.
+`VITE_API_BASE_URL` is empty by default so browser requests remain same-origin; a cross-origin value
+is rejected at startup. `VITE_API_PROXY_TARGET` controls the server-side local Vite proxy.
 {% endif %}
 
 ## Validation
@@ -142,7 +155,8 @@ HARNESS_STRICT=1 HARNESS_DOCKER=1 python harness/check.py
 cd backend
 uv run --frozen --no-sync ruff check .
 uv run --frozen --no-sync mypy src/app
-uv run --frozen --no-sync pytest
+uv run --frozen --no-sync pytest --cov=app --cov-branch --cov-fail-under=65
+uv run --frozen pip-audit
 ```
 {% endif %}{% if profile != 'backend' %}Frontend-only gates:
 
@@ -150,10 +164,11 @@ uv run --frozen --no-sync pytest
 cd frontend
 npm run lint
 npm run typecheck
-npm run test
+npm run test:coverage
 npm run build
 npm run api:check
 npm run i18n:check
+npm audit --audit-level=high
 ```
 {% endif %}
 
@@ -187,6 +202,9 @@ Health endpoints do not require authentication:
 curl http://localhost:8000/health/live
 curl http://localhost:8000/health/ready
 ```
+
+Every API response includes `X-Request-ID`; use it to correlate a sanitized public error with the
+structured API log. `app config check --json` reports only non-secret effective settings.
 
 {% if sample and not auth %}Create and query a sample item:
 
@@ -250,13 +268,14 @@ project-forge update .
 Project Forge supports additive `add`/`enable` operations and does not remove capabilities. Update
 conflicts preserve all managed files and create `.rej` files for manual resolution.
 
-When the installed tool and project both report `0.2.0`, `update --check` cannot detect a refreshed
-same-version template from the version string alone. To apply this runtime compatibility refresh,
-reinstall the tool source, verify a clean worktree, and run the update directly:
+State schema 2 stores a deterministic template digest. After reinstalling the tool source,
+`update --check` performs a real dry render and three-way comparison, so it detects refreshed
+template content even when both sides still report `0.2.0`:
 
 ```bash
 uv tool upgrade --reinstall project-forge
 git status --short
+project-forge update --check .
 project-forge update .
 python3 harness/check.py
 ```

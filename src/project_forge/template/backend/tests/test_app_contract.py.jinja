@@ -46,3 +46,14 @@ def test_settings_only_expose_enabled_capabilities() -> None:
     )
     assert settings.database_url == "postgresql://safe:secret@db/app"
 {% endif %}
+
+
+def test_config_cli_is_available_for_every_backend_profile() -> None:
+    from click import unstyle
+    from typer.testing import CliRunner
+
+    from app.cli import app as cli_app
+
+    result = CliRunner().invoke(cli_app, ["config", "check", "--help"])
+    assert result.exit_code == 0
+    assert "--json" in unstyle(result.stdout)

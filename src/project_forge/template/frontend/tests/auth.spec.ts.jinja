@@ -9,6 +9,7 @@ import {
   createWorkspace,
   getSession,
   readCsrfToken,
+  resolveApiBaseUrl,
 } from '@/shared/api/client'
 import { useWorkspaceStore } from '@/features/auth/workspace'
 import {
@@ -18,6 +19,19 @@ import {
 } from '@/features/auth/session'
 
 describe('session API client', () => {
+  it('keeps browser API traffic on the gateway origin', () => {
+    expect(resolveApiBaseUrl('', 'http://172.20.0.10:8173')).toBe(
+      'http://172.20.0.10:8173',
+    )
+    expect(resolveApiBaseUrl('/gateway/', 'http://172.20.0.10:8173')).toBe(
+      'http://172.20.0.10:8173/gateway',
+    )
+    expect(() => resolveApiBaseUrl(
+      'http://172.20.0.11:8000',
+      'http://172.20.0.10:8173',
+    )).toThrow('must resolve to the browser origin')
+  })
+
   it('prefers the production CSRF cookie and sends it on unsafe requests', async () => {
     vi.spyOn(document, 'cookie', 'get').mockReturnValue(
       '__Host-{{ project_slug }}-csrf=production-token; {{ project_slug }}-csrf=dev-token',
@@ -39,6 +53,14 @@ describe('session API client', () => {
     expect((captured as unknown as Request).headers.get('X-CSRF-Token')).toBe('production-token')
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+  })
+
+  it('ignores a malformed readable CSRF cookie', () => {
+    vi.spyOn(document, 'cookie', 'get').mockReturnValue('{{ project_slug }}-csrf=%broken')
+
+    expect(readCsrfToken()).toBeNull()
+
+    vi.restoreAllMocks()
   })
 
   it('turns a 401 session response into guest state and emits the global signal', async () => {

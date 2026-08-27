@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.13"
+      - run: uv sync --all-groups --frozen
+      - name: Require the tag to match project metadata
+        run: |
+          version=$(uv run --frozen python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          test "${GITHUB_REF_NAME}" = "v${version}"
+      - name: Build and smoke-test wheel
+        run: |
+          uv build --wheel
+          uv tool install --python 3.13 --force dist/project_forge-*.whl
+          "$(uv tool dir --bin)/project-forge" --version
+      - name: Audit runtime dependencies and emit CycloneDX SBOM
+        run: |
+          uv export --frozen --no-dev --no-emit-project \
+            --format requirements-txt --output-file dist/project-forge-requirements.txt
+          uv run --frozen pip-audit \
+            --requirement dist/project-forge-requirements.txt \
+            --format cyclonedx-json \
+            --output dist/project-forge.cdx.json
+          sha256sum dist/project_forge-*.whl dist/project-forge.cdx.json > dist/SHA256SUMS
+      - uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        with:
+          subject-path: dist/project_forge-*.whl
+      - name: Create immutable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${GITHUB_REF_NAME}"
+          dist/project_forge-*.whl
+          dist/project-forge.cdx.json
+          dist/project-forge-requirements.txt
+          dist/SHA256SUMS
+          --verify-tag --generate-notes
