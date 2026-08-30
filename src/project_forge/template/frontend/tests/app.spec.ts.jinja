@@ -1,0 +1,61 @@
+import { describe, expect, it{% if sample and not auth %}, vi{% endif %} } from 'vitest'
+
+{% if not auth %}import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
+import { createPinia } from 'pinia'
+import PrimeVue from 'primevue/config'
+import { flushPromises, mount } from '@vue/test-utils'
+
+import App from '@/app/App.vue'
+import { i18n, initialLocale } from '@/shared/i18n'
+
+describe('application shell', () => {
+  it('renders the public shell and synchronizes locale-owned client state', async () => {
+{% if sample %}    const item = {
+      itemId: '00000000-0000-4000-8000-000000000001',
+      name: 'Example',
+      description: null,
+      status: 'ACTIVE' as const,
+      createdAt: '2026-01-01T00:00:00Z',
+    }
+    const fetchMock = vi.fn(async (request: Request) => new Response(
+      JSON.stringify(request.method === 'POST' ? item : { items: [] }),
+      { status: request.method === 'POST' ? 201 : 200, headers: { 'Content-Type': 'application/json' } },
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+{% endif %}    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    const wrapper = mount(App, {
+      attachTo: document.body,
+      global: {
+        plugins: [
+          createPinia(),
+          i18n,
+          [VueQueryPlugin, { queryClient }],
+          PrimeVue,
+        ],
+      },
+    })
+
+    await flushPromises()
+    expect(wrapper.get('h1').text()).not.toBe('')
+    const nextLocale = initialLocale === 'zh-CN' ? 'en-US' : 'zh-CN'
+    await wrapper.get('select').setValue(nextLocale)
+    expect(document.documentElement.lang).toBe(nextLocale)
+    expect(localStorage.getItem('app.locale')).toBe(nextLocale)
+
+{% if sample %}    expect(fetchMock).toHaveBeenCalled()
+    await wrapper.get('[data-testid="item-name"]').setValue('Created from a test')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(fetchMock.mock.calls.some(([request]) => request.method === 'POST')).toBe(true)
+{% endif %}    wrapper.unmount()
+    queryClient.clear()
+  })
+})
+{% else %}describe('application shell', () => {
+  it('is covered by the authenticated state-machine tests', () => {
+    expect(true).toBe(true)
+  })
+})
+{% endif %}

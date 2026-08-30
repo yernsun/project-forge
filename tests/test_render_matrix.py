@@ -100,8 +100,13 @@ def test_every_valid_combination_renders(state: ProjectState, tmp_path: Path) ->
         state.has_backend and state.evented
     )
     assert (destination / "backend/src/app/api/observability.py").exists() is state.has_backend
+    assert (destination / "backend/tests/test_core_runtime.py").exists() is state.has_backend
     assert (destination / "backend/src/app/domain/items.py").exists() is (
         state.has_backend and state.sample
+    )
+    assert (destination / "frontend/tests/app.spec.ts").exists() is state.has_frontend
+    assert (destination / "frontend/tests/items.spec.ts").exists() is (
+        state.has_frontend and state.sample
     )
     assert (destination / "frontend/src/features/items").exists() is (
         state.has_frontend and state.sample

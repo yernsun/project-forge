@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import subprocess
 import sys
 import tarfile
@@ -19,6 +20,7 @@ from project_forge.identity import current_template_digest
 from project_forge.renderer import initialize_project
 
 runner = CliRunner()
+ANSI_ESCAPE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 
 def commit_project(project: Path, message: str = "fixture") -> None:
@@ -95,8 +97,14 @@ def test_python_module_and_console_app_have_equivalent_global_contract() -> None
     )
 
     assert console_help.exit_code == module_help.returncode == module_version.returncode == 0
+    # Rich may wrap an option name between characters when the Windows runner reports
+    # a narrow terminal. Compare unstyled, whitespace-free help so display wrapping
+    # cannot make the console entry point appear to have a different contract.
+    console_contract = "".join(ANSI_ESCAPE.sub("", console_help.stdout).split())
+    module_contract = "".join(ANSI_ESCAPE.sub("", module_help.stdout).split())
     for token in ("--version", "init", "doctor", "add", "enable", "update"):
-        assert (token in console_help.stdout) is (token in module_help.stdout)
+        assert token in console_contract
+        assert token in module_contract
     assert module_version.stdout.strip() == __version__
 
 
