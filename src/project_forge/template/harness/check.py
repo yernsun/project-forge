@@ -11,9 +11,11 @@ ROOT = Path(__file__).resolve().parents[1]
 STRICT = os.getenv("HARNESS_STRICT") == "1"
 
 
-def run(command: list[str], cwd: Path = ROOT) -> None:
+def run(
+    command: list[str], cwd: Path = ROOT, *, env: dict[str, str] | None = None
+) -> None:
     print("+", " ".join(command), flush=True)
-    subprocess.run(command, cwd=cwd, check=True)
+    subprocess.run(command, cwd=cwd, check=True, env=env)
 
 
 def require(tool: str) -> bool:
@@ -46,7 +48,7 @@ def _run_checks() -> int:
                     "--cov=app",
                     "--cov-branch",
                     "--cov-report=term-missing",
-                    "--cov-fail-under=65",
+                    "--cov-fail-under=90",
                 ]
             )
         run(pytest, backend)
@@ -83,8 +85,51 @@ def _run_checks() -> int:
                 frontend,
             )
     if os.getenv("HARNESS_DOCKER") == "1" and require("docker"):
-        run(["docker", "compose", "-f", "docker-compose.dev.yml", "config"])
-        run(["docker", "compose", "-f", "docker-compose.yml", "config"])
+        with tempfile.TemporaryDirectory(prefix="project-forge-compose-") as temp_dir:
+            compose_environment = Path(temp_dir) / "compose.env"
+            compose_environment.write_text(
+                "\n".join(
+                    (
+                        "POSTGRES_PASSWORD=harness-only-database-password",
+                        "DATABASE_URL=postgresql://app:harness-only-database-password@db:5432/app",
+                        "APP_ALLOWED_ORIGINS=https://172.20.0.10:8443",
+                        "APP_AUTH_RATE_LIMIT_SECRET=harness-only-rate-limit-secret-at-least-32-bytes",
+                        "APP_SIGNUP_ENABLED=false",
+                        "FORWARDED_ALLOW_IPS=127.0.0.1",
+                        "FRONTEND_API_UPSTREAM=http://host.docker.internal:8000",
+                        "FRONTEND_API_PROXY_TARGET=http://host.docker.internal:8000",
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            compose_process_environment = os.environ.copy()
+            for name in (
+                "POSTGRES_PASSWORD",
+                "DATABASE_URL",
+                "APP_ALLOWED_ORIGINS",
+                "APP_AUTH_RATE_LIMIT_SECRET",
+                "APP_SIGNUP_ENABLED",
+                "FORWARDED_ALLOW_IPS",
+                "APP_BIND_HOST",
+                "APP_PORT",
+                "FRONTEND_API_UPSTREAM",
+                "FRONTEND_API_PROXY_TARGET",
+            ):
+                compose_process_environment.pop(name, None)
+            for compose_file in ("docker-compose.dev.yml", "docker-compose.yml"):
+                run(
+                    [
+                        "docker",
+                        "compose",
+                        "--env-file",
+                        str(compose_environment),
+                        "-f",
+                        compose_file,
+                        "config",
+                    ],
+                    env=compose_process_environment,
+                )
     return 0
 
 

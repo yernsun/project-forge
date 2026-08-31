@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
+from typing import Protocol
 from uuid import UUID
 
 from psycopg import sql
 
 from app.db.query import SqlPredicateBuilder
-from app.db.types import DbConnection
 from app.domain.items import UNSET, Item, ItemFilter, ItemSort, ItemStatus
+from app.repositories.base import BaseRepository
 
 GET_BY_ID = sql.SQL(
     """
@@ -27,6 +28,17 @@ INSERT_ITEM = sql.SQL(
         %(status)s, %(version)s, %(created_at)s, %(updated_at)s
     )
     RETURNING item_id, workspace_id, name, description, status, version, created_at, updated_at
+    """
+)
+
+INSERT_ITEMS = sql.SQL(
+    """
+    INSERT INTO items (
+        item_id, workspace_id, name, description, status, version, created_at, updated_at
+    ) VALUES (
+        %(item_id)s, %(workspace_id)s, %(name)s, %(description)s,
+        %(status)s, %(version)s, %(created_at)s, %(updated_at)s
+    )
     """
 )
 
@@ -85,31 +97,59 @@ def build_item_list_query(
     return query, parameters, False
 
 
-class ItemRepository:
-    def __init__(self, connection: DbConnection) -> None:
-        self._connection = connection
+def _item_values(item: Item) -> dict[str, object]:
+    return {
+        "item_id": item.item_id,
+        "workspace_id": item.workspace_id,
+        "name": item.name,
+        "description": item.description,
+        "status": item.status.value,
+        "version": item.version,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+    }
+
+
+class ItemRepository(BaseRepository, Protocol):
+    """Persistence contract for the optional sample Item capability."""
+
+    async def get(self, item_id: UUID, workspace_id: UUID | None) -> Item | None: ...
+
+    async def add(self, item: Item) -> Item: ...
+
+    async def add_many(self, items: Iterable[Item]) -> int: ...
+
+    async def list(
+        self, workspace_id: UUID | None, filters: ItemFilter
+    ) -> tuple[Item, ...]: ...
+
+
+class PostgresItemRepository(BaseRepository):
+    """Psycopg implementation created only by UnitOfWork."""
 
     async def get(self, item_id: UUID, workspace_id: UUID | None) -> Item | None:
-        async with self._connection.cursor() as cursor:
-            await cursor.execute(
-                GET_BY_ID, {"item_id": item_id, "workspace_id": workspace_id}, prepare=True
-            )
-            row = await cursor.fetchone()
+        row = await self.connection.fetch_one(
+            GET_BY_ID,
+            {"item_id": item_id, "workspace_id": workspace_id},
+            prepare=True,
+        )
         return Item.model_validate(row) if row else None
 
     async def add(self, item: Item) -> Item:
-        values = item.model_dump(mode="python")
-        values["status"] = item.status.value
-        async with self._connection.cursor() as cursor:
-            await cursor.execute(INSERT_ITEM, values, prepare=True)
-            row = await cursor.fetchone()
+        row = await self.connection.fetch_one(
+            INSERT_ITEM, _item_values(item), prepare=True
+        )
         if row is None:
             raise RuntimeError("INSERT did not return an item")
         return Item.model_validate(row)
 
+    async def add_many(self, items: Iterable[Item]) -> int:
+        """Insert a bounded batch with one driver-level executemany operation."""
+
+        parameter_sets = (_item_values(item) for item in items)
+        return await self.connection.execute_many(INSERT_ITEMS, parameter_sets)
+
     async def list(self, workspace_id: UUID | None, filters: ItemFilter) -> tuple[Item, ...]:
         query, parameters, prepare = build_item_list_query(workspace_id, filters)
-        async with self._connection.cursor() as cursor:
-            await cursor.execute(query, parameters, prepare=prepare)
-            rows = await cursor.fetchall()
+        rows = await self.connection.fetch_all(query, parameters, prepare=prepare)
         return tuple(Item.model_validate(row) for row in rows)

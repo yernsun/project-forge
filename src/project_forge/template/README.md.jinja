@@ -110,7 +110,7 @@ Run the outbox relay in another backend terminal:
 
 ```bash
 cd backend
-uv run python -m app.events.worker relay
+uv run python -m app.events.worker
 uv run app events status --json
 uv run app events retry-failed --limit 100 --dry-run
 ```
@@ -155,7 +155,7 @@ HARNESS_STRICT=1 HARNESS_DOCKER=1 python harness/check.py
 cd backend
 uv run --frozen --no-sync ruff check .
 uv run --frozen --no-sync mypy src/app
-uv run --frozen --no-sync pytest --cov=app --cov-branch --cov-fail-under=65
+uv run --frozen --no-sync pytest --cov=app --cov-branch --cov-fail-under=90
 uv run --frozen pip-audit
 ```
 {% endif %}{% if profile != 'backend' %}Frontend-only gates:

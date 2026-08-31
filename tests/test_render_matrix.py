@@ -4,6 +4,8 @@ import ast
 import json
 import py_compile
 import re
+import subprocess
+import sys
 from collections.abc import Iterator
 from html import unescape
 from html.parser import HTMLParser
@@ -69,6 +71,14 @@ STATES = tuple(valid_states())
 def test_every_valid_combination_renders(state: ProjectState, tmp_path: Path) -> None:
     destination = tmp_path / "project"
     render_fresh(state, destination)
+    for script in ("check_architecture.py", "check_sql.py"):
+        subprocess.run(
+            [sys.executable, f"harness/{script}"],
+            cwd=destination,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
     assert (destination / "FAQ.md").is_file()
     assert (destination / "FAQ.zh-CN.md").is_file()
     assert (destination / "backend").exists() is state.has_backend
@@ -101,6 +111,10 @@ def test_every_valid_combination_renders(state: ProjectState, tmp_path: Path) ->
     )
     assert (destination / "backend/src/app/api/observability.py").exists() is state.has_backend
     assert (destination / "backend/tests/test_core_runtime.py").exists() is state.has_backend
+    assert (destination / "backend/src/app/repositories/base.py").exists() is state.has_backend
+    assert (
+        destination / "backend/src/app/db/repository_connection.py"
+    ).exists() is state.has_backend
     assert (destination / "backend/src/app/domain/items.py").exists() is (
         state.has_backend and state.sample
     )
@@ -237,7 +251,7 @@ def test_generated_readmes_are_runnable_and_profile_specific(
         assert ("npm ci" in content) is state.has_frontend
         assert ("/api/v1/auth/signup" in content) is auth
         assert ("app auth purge-expired" in content) is auth
-        assert ("app.events.worker relay" in content) is evented
+        assert ("python -m app.events.worker" in content) is evented
         assert ("app config check --json" in content) is state.has_backend
         assert ("app events status --json" in content) is evented
         assert ("npm run test:coverage" in content) is state.has_frontend

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from typing import cast
+from unittest.mock import AsyncMock, Mock
+from uuid import uuid4
 
 import pytest
 from argon2 import PasswordHasher
@@ -10,14 +12,18 @@ from click import unstyle
 from fastapi import FastAPI, Response
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from psycopg.errors import UniqueViolation
 from pydantic import ValidationError
 from starlette.requests import Request
 from typer.testing import CliRunner
 
+import app.auth.api as auth_api
+import app.auth.service as auth_service_module
 from app.api.errors import install_error_handlers
 from app.api.observability import RequestContextMiddleware
 from app.auth.api import SignupRequest, _set_session_cookies, get_unsafe_session
 from app.auth.errors import (
+    AuthenticationRequiredError,
     AuthRateLimitedError,
     CsrfValidationError,
     EmailAlreadyExistsError,
@@ -36,7 +42,9 @@ from app.auth.models import (
     UserWithCredential,
     Workspace,
 )
+from app.auth.repository import PostgresAuthRepository
 from app.auth.security import (
+    PasswordVerification,
     generate_token,
     hash_password,
     hash_token,
@@ -48,6 +56,7 @@ from app.auth.service import AuthService, RateLimitSpec, fixed_window
 from app.cli import app as cli_app
 from app.domain.base import utc_now
 from app.main import app as fastapi_app
+from app.repositories.base import RepositoryConnection
 from app.settings import (
     COOKIE_PREFIX,
     DEVELOPMENT_RATE_LIMIT_SECRET,
@@ -283,7 +292,8 @@ def test_production_requires_explicit_valid_trusted_proxies(value: str) -> None:
 
 
 def _request(*, csrf_cookie: str | None, csrf_header: str | None) -> Request:
-    headers = [(b"origin", b"http://localhost:5173")]
+    allowed_origin = sorted(get_settings().allowed_origins)[0]
+    headers = [(b"origin", allowed_origin.encode())]
     cookies = [b"session=fake-session"]
     if csrf_cookie is not None:
         cookies.append(f"{get_settings().csrf_cookie_name}={csrf_cookie}".encode())
@@ -324,6 +334,161 @@ async def test_unsafe_session_requires_header_cookie_and_session_binding() -> No
     assert resolved is principal
     with pytest.raises(CsrfValidationError):
         await get_unsafe_session(_request(csrf_cookie=csrf, csrf_header=None), factory, principal)
+    with pytest.raises(CsrfValidationError):
+        await get_unsafe_session(
+            _request(csrf_cookie=csrf, csrf_header=csrf + "different"),
+            factory,
+            principal,
+        )
+
+
+def _api_request(
+    *,
+    headers: tuple[tuple[bytes, bytes], ...] = (),
+    session_token: str | None = None,
+    with_client: bool = True,
+) -> Request:
+    request_headers = list(headers)
+    if session_token is not None:
+        request_headers.append(
+            (
+                b"cookie",
+                f"{get_settings().session_cookie_name}={session_token}".encode(),
+            )
+        )
+    scope: dict[str, object] = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/api/v1/auth/login",
+        "raw_path": b"/api/v1/auth/login",
+        "query_string": b"",
+        "headers": request_headers,
+        "server": ("localhost", 8000),
+    }
+    if with_client:
+        scope["client"] = ("127.0.0.1", 12345)
+    return Request(scope)
+
+
+def test_auth_origin_resolution_and_workspace_name_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(allowed_origins_csv="http://localhost:5173")
+    monkeypatch.setattr(auth_api, "get_settings", lambda: settings)
+    origin = _api_request(headers=((b"origin", b"http://localhost:5173/"),))
+    assert auth_api._source_origin(origin) == "http://localhost:5173"
+    auth_api.require_allowed_origin(origin)
+
+    referer = _api_request(
+        headers=((b"referer", b"http://localhost:5173/workspaces/one"),)
+    )
+    assert auth_api._source_origin(referer) == "http://localhost:5173"
+    assert auth_api._source_origin(_api_request()) is None
+    invalid_referer = _api_request(headers=((b"referer", b"mailto:person@example.com"),))
+    assert auth_api._source_origin(invalid_referer) is None
+    with pytest.raises(OriginNotAllowedError):
+        auth_api.require_allowed_origin(
+            _api_request(headers=((b"origin", b"http://attacker.invalid"),))
+        )
+    with pytest.raises(ValidationError, match="workspace name cannot be blank"):
+        SignupRequest.model_validate(
+            {
+                "email": "person@example.com",
+                "password": "correct horse battery staple",
+                "workspaceName": "   ",
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_auth_api_dependencies_and_routes_delegate_without_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(allowed_origins_csv="http://localhost:5173")
+    monkeypatch.setattr(auth_api, "get_settings", lambda: settings)
+    now = utc_now()
+    principal = SessionPrincipal(
+        session_id=uuid4(),
+        user_id=uuid4(),
+        email="person@example.com",
+        csrf_hash=hash_token("csrf-token"),
+        expires_at=now.replace(year=now.year + 1),
+    )
+    issued = IssuedSession(
+        principal=principal,
+        session_token=generate_token(),
+        csrf_token=generate_token(),
+    )
+    workspace = Workspace(workspace_id=uuid4(), name="Example", created_at=now)
+    service = type(
+        "FakeAuthService",
+        (),
+        {
+            "signup": AsyncMock(return_value=issued),
+            "login": AsyncMock(return_value=issued),
+            "resolve": AsyncMock(return_value=principal),
+            "logout": AsyncMock(),
+            "list_workspaces": AsyncMock(return_value=(workspace,)),
+            "create_workspace": AsyncMock(return_value=workspace),
+            "require_csrf": Mock(),
+        },
+    )()
+    monkeypatch.setattr(auth_api, "_service", lambda _factory: service)
+    factory = cast(UnitOfWorkFactory, object())
+
+    with pytest.raises(AuthenticationRequiredError):
+        await auth_api.get_current_session(_api_request(), factory)
+    resolved = await auth_api.get_current_session(
+        _api_request(session_token="opaque-session"), factory
+    )
+    assert resolved is principal
+    service.resolve.assert_awaited_once_with("opaque-session")
+
+    raw_request = _api_request(
+        headers=((b"origin", b"http://localhost:5173"),)
+    )
+    assert auth_api._client_key(raw_request) == "127.0.0.1"
+    assert auth_api._client_key(_api_request(with_client=False)) == "unknown-client"
+
+    signup_response = Response()
+    signup_result = await auth_api.signup(
+        auth_api.SignupRequest(
+            email="new@example.com",
+            password="correct horse battery staple",
+            workspace_name="Example",
+        ),
+        raw_request,
+        signup_response,
+        factory,
+        None,
+    )
+    assert signup_result.user_id == principal.user_id
+    assert len(signup_response.headers.getlist("set-cookie")) == 2
+
+    login_response = Response()
+    login_result = await auth_api.login(
+        auth_api.LoginRequest(email="person@example.com", password="password"),
+        raw_request,
+        login_response,
+        factory,
+        None,
+    )
+    assert login_result.email == principal.email
+    assert (await auth_api.session(principal)).user_id == principal.user_id
+
+    logout_response = Response()
+    await auth_api.logout(logout_response, factory, principal)
+    service.logout.assert_awaited_once_with(principal)
+    assert len(logout_response.headers.getlist("set-cookie")) == 2
+
+    listed = await auth_api.list_workspaces(factory, principal)
+    assert listed.workspaces[0].workspace_id == workspace.workspace_id
+    created = await auth_api.create_workspace(
+        auth_api.WorkspaceRequest(name="Example"), factory, principal
+    )
+    assert created.workspace_id == workspace.workspace_id
 
 
 class _RateRepository:
@@ -556,7 +721,11 @@ def test_auth_purge_cli_exposes_dry_run() -> None:
 
 
 def test_config_cli_reports_only_redacted_effective_settings() -> None:
-    result = CliRunner().invoke(cli_app, ["config", "check", "--json"])
+    result = CliRunner().invoke(
+        cli_app,
+        ["config", "check", "--json"],
+        env={"APP_ALLOWED_ORIGINS": "http://localhost:5173"},
+    )
     assert result.exit_code == 0, result.output
     summary = json.loads(result.stdout)
     assert summary["environment"] == "development"
@@ -597,6 +766,94 @@ def test_fixed_window_is_stable_within_the_window() -> None:
     assert (end - start).total_seconds() == 60
 
 
+@pytest.mark.asyncio
+async def test_auth_repository_maps_rows_and_covers_persistence_failures() -> None:
+    connection = AsyncMock()
+    repository = PostgresAuthRepository(cast(RepositoryConnection, connection))
+    user = _user()
+    identity = user.identity
+    credential = user.credential
+    now = identity.created_at
+    identity_row = identity.model_dump(mode="python") | credential.model_dump(mode="python")
+
+    connection.fetch_one.return_value = identity_row
+    assert await repository.add_user(identity, credential) == identity
+    connection.fetch_one.return_value = None
+    with pytest.raises(RuntimeError, match="did not return a user"):
+        await repository.add_user(identity, credential)
+    connection.fetch_one.side_effect = UniqueViolation("duplicate email")
+    with pytest.raises(EmailAlreadyExistsError):
+        await repository.add_user(identity, credential)
+    connection.fetch_one.side_effect = None
+
+    connection.fetch_one.return_value = identity_row
+    found = await repository.find_user_by_email(identity.email)
+    assert found is not None and found.identity == identity
+    connection.fetch_one.return_value = None
+    assert await repository.find_user_by_email("missing@example.com") is None
+
+    await repository.update_password_hash(identity.user_id, "replacement", now)
+    workspace = Workspace(workspace_id=uuid4(), name="Example", created_at=now)
+    assert await repository.add_workspace(workspace, identity.user_id) == workspace
+    connection.fetch_all.return_value = [workspace.model_dump(mode="python")]
+    assert await repository.list_workspaces(identity.user_id) == (workspace,)
+    connection.fetch_one.return_value = {"allowed": True}
+    assert await repository.is_workspace_member(identity.user_id, workspace.workspace_id)
+    connection.fetch_one.return_value = None
+    assert not await repository.is_workspace_member(identity.user_id, workspace.workspace_id)
+
+    session_id = uuid4()
+    expires_at = now.replace(year=now.year + 1)
+    await repository.add_session(
+        session_id=session_id,
+        user_id=identity.user_id,
+        token_hash="token-hash",
+        csrf_hash="csrf-hash",
+        expires_at=expires_at,
+        created_at=now,
+    )
+    principal_row = {
+        "session_id": session_id,
+        "user_id": identity.user_id,
+        "email": identity.email,
+        "csrf_hash": "csrf-hash",
+        "expires_at": expires_at,
+    }
+    connection.fetch_one.return_value = principal_row
+    assert (await repository.resolve_session("token-hash", now)) is not None
+    connection.fetch_one.return_value = None
+    assert await repository.resolve_session("expired", now) is None
+    await repository.delete_session(session_id)
+
+    connection.fetch_one.return_value = {"attempt_count": 2}
+    assert await repository.consume_rate_limit(
+        scope="login:ip",
+        subject_hash="subject-hash",
+        window_started_at=now,
+        expires_at=expires_at,
+    ) == 2
+    connection.fetch_one.return_value = None
+    with pytest.raises(RuntimeError, match="UPSERT did not return"):
+        await repository.consume_rate_limit(
+            scope="login:ip",
+            subject_hash="subject-hash",
+            window_started_at=now,
+            expires_at=expires_at,
+        )
+    await repository.clear_rate_limit(
+        scope="login:ip", subject_hash="subject-hash", window_started_at=now
+    )
+
+    connection.execute.side_effect = [2, 3]
+    assert await repository.purge_expired(now) == (2, 3)
+    connection.execute.side_effect = None
+    connection.fetch_one.side_effect = [{"count": 4}, {"count": 5}]
+    assert await repository.count_expired(now) == (4, 5)
+    connection.fetch_one.side_effect = [None, {"count": 0}]
+    with pytest.raises(RuntimeError, match="count query returned no row"):
+        await repository.count_expired(now)
+
+
 class _LifecycleRepository:
     def __init__(
         self, user: UserWithCredential | None, *, rate_counts: tuple[int, ...] = ()
@@ -605,6 +862,7 @@ class _LifecycleRepository:
         self._rate_counts = list(rate_counts)
         self.rate_calls: list[dict[str, object]] = []
         self.cleared_scopes: list[str] = []
+        self.updated_hashes: list[str] = []
 
     async def consume_rate_limit(self, **values: object) -> int:
         self.rate_calls.append(values)
@@ -616,8 +874,10 @@ class _LifecycleRepository:
     async def clear_rate_limit(self, **values: object) -> None:
         self.cleared_scopes.append(str(values["scope"]))
 
-    async def update_password_hash(self, *_args: object) -> None:
-        return None
+    async def update_password_hash(
+        self, _user_id: object, password_hash: str, _now: object
+    ) -> None:
+        self.updated_hashes.append(password_hash)
 
     async def add_session(self, **_values: object) -> None:
         return None
@@ -766,3 +1026,58 @@ async def test_signup_disabled_fails_before_database_or_hashing_work() -> None:
             "127.0.0.1",
         )
     assert repository.rate_calls == []
+
+
+@pytest.mark.asyncio
+async def test_login_rehashes_and_session_workspace_cleanup_methods_delegate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = _LifecycleRepository(_user())
+    factory = _LifecycleFactory(repository)
+    service = AuthService(cast(UnitOfWorkFactory, factory), Settings())
+    monkeypatch.setattr(
+        auth_service_module,
+        "verify_password",
+        lambda _password_hash, _password: PasswordVerification(
+            valid=True, needs_rehash=True
+        ),
+    )
+    monkeypatch.setattr(auth_service_module, "hash_password", lambda _password: "replacement")
+    await service.login("person@example.com", "password", "127.0.0.1")
+    assert repository.updated_hashes == ["replacement"]
+
+    now = utc_now()
+    principal = SessionPrincipal(
+        session_id=uuid4(),
+        user_id=uuid4(),
+        email="person@example.com",
+        csrf_hash=hash_token("csrf-token"),
+        expires_at=now.replace(year=now.year + 1),
+    )
+    workspace = Workspace(workspace_id=uuid4(), name="Example", created_at=now)
+    persistence = type(
+        "AuthPersistence",
+        (),
+        {
+            "resolve_session": AsyncMock(side_effect=[principal, None]),
+            "delete_session": AsyncMock(),
+            "add_workspace": AsyncMock(return_value=workspace),
+            "list_workspaces": AsyncMock(return_value=(workspace,)),
+            "count_expired": AsyncMock(return_value=(2, 3)),
+            "purge_expired": AsyncMock(return_value=(4, 5)),
+        },
+    )()
+    lifecycle = AuthService(
+        cast(UnitOfWorkFactory, _LifecycleFactory(persistence)), Settings()
+    )
+    assert await lifecycle.resolve("opaque-token") is principal
+    with pytest.raises(InvalidSessionError):
+        await lifecycle.resolve("expired-token")
+    await lifecycle.logout(principal)
+    persistence.delete_session.assert_awaited_once_with(principal.session_id)
+    assert await lifecycle.create_workspace(principal.user_id, "Example") == workspace
+    assert await lifecycle.list_workspaces(principal.user_id) == (workspace,)
+    assert await lifecycle.purge_expired(dry_run=True) == (2, 3)
+    assert await lifecycle.purge_expired() == (4, 5)
+    with pytest.raises(CsrfValidationError):
+        lifecycle.require_csrf(principal, "wrong-token")

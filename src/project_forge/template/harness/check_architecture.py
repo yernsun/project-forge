@@ -6,7 +6,36 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_ROOT = ROOT / "backend/src/app"
-SQL_COMPOSITION_TYPES = frozenset({"Identifier", "Literal", "Placeholder", "SQL"})
+SQL_COMPOSITION_TYPES = frozenset(
+    {"Composed", "Identifier", "Literal", "Placeholder", "SQL"}
+)
+REPOSITORY_SQL_METHODS = frozenset(
+    {"copy_rows", "execute", "execute_many", "executemany", "fetch_all", "fetch_one"}
+)
+RAW_CONNECTION_METHODS = frozenset(
+    {
+        "acquire",
+        "commit",
+        "connect",
+        "connection",
+        "copy",
+        "cursor",
+        "pipeline",
+        "release",
+        "rollback",
+        "transaction",
+    }
+)
+RAW_CONNECTION_TYPES = frozenset(
+    {
+        "AsyncConnection",
+        "AsyncConnectionPool",
+        "Connection",
+        "ConnectionPool",
+        "DbConnection",
+        "DbPool",
+    }
+)
 
 
 def _current_package(path: Path) -> tuple[str, ...]:
@@ -189,6 +218,128 @@ def _root_name(node: ast.AST) -> str | None:
     return current.id if isinstance(current, ast.Name) else None
 
 
+def _last_name(node: ast.AST, bindings: dict[str, str]) -> str | None:
+    canonical = _canonical_name(node, bindings)
+    return canonical.rsplit(".", maxsplit=1)[-1] if canonical else None
+
+
+def _is_postgres_repository_name(name: str | None) -> bool:
+    return bool(name and name.startswith("Postgres") and name.endswith("Repository"))
+
+
+def _parent_index(tree: ast.AST) -> dict[ast.AST, ast.AST]:
+    return {
+        child: parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
+
+
+def _enclosing_function(
+    node: ast.AST, parents: dict[ast.AST, ast.AST]
+) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    current = parents.get(node)
+    while current is not None:
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return current
+        current = parents.get(current)
+    return None
+
+
+def _has_cached_property(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    bindings: dict[str, str],
+) -> bool:
+    return any(
+        _last_name(decorator, bindings) == "cached_property"
+        for decorator in function.decorator_list
+    )
+
+
+def _is_require_connection_call(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_require_connection"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "self"
+        and not node.args
+        and not node.keywords
+    )
+
+
+def _repository_class_problems(
+    path: Path,
+    tree: ast.AST,
+    bindings: dict[str, str],
+) -> list[str]:
+    problems: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef) or not node.name.endswith("Repository"):
+            continue
+        if node.name == "BaseRepository":
+            continue
+        base_names = {_last_name(base, bindings) for base in node.bases}
+        if "BaseRepository" not in base_names:
+            problems.append(
+                f"{path}:{node.lineno}: every repository must inherit BaseRepository"
+            )
+        if node.name.startswith("Postgres"):
+            if "Protocol" in base_names:
+                problems.append(
+                    f"{path}:{node.lineno}: PostgreSQL repository implementations "
+                    "must be concrete BaseRepository subclasses"
+                )
+        elif "Protocol" not in base_names:
+            problems.append(
+                f"{path}:{node.lineno}: repository contracts must inherit Protocol; "
+                "name concrete implementations Postgres*Repository"
+            )
+    return problems
+
+
+def _repository_instantiation_problems(
+    path: Path,
+    relative: Path,
+    tree: ast.AST,
+    bindings: dict[str, str],
+) -> list[str]:
+    problems: list[str] = []
+    parents = _parent_index(tree)
+    unit_module = relative.parts == ("uow", "unit.py")
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        repository_name = _last_name(node.func, bindings)
+        if not _is_postgres_repository_name(repository_name):
+            continue
+        if not unit_module:
+            problems.append(
+                f"{path}:{node.lineno}: {repository_name} may only be instantiated "
+                "by UnitOfWork"
+            )
+            continue
+        function = _enclosing_function(node, parents)
+        if function is None or not _has_cached_property(function, bindings):
+            problems.append(
+                f"{path}:{node.lineno}: UnitOfWork repositories must be created "
+                "inside @cached_property methods"
+            )
+            continue
+        if not node.args or not _is_require_connection_call(node.args[0]):
+            problems.append(
+                f"{path}:{node.lineno}: UnitOfWork must inject "
+                "self._require_connection() as the first repository argument"
+            )
+        return_name = _last_name(function.returns, bindings) if function.returns else None
+        if return_name != repository_name:
+            problems.append(
+                f"{path}:{function.lineno}: cached repository property must return "
+                f"{repository_name}"
+            )
+    return problems
+
+
 def _is_factory_call(node: ast.Call, factory_names: set[str]) -> bool:
     root = _root_name(node.func)
     return root in factory_names if root else False
@@ -270,6 +421,9 @@ def scan(path: Path) -> list[str]:
     candidates = _module_candidates(modules, bindings)
     problems: list[str] = []
     relative = path.relative_to(APP_ROOT)
+    problems.extend(
+        _repository_instantiation_problems(path, relative, tree, bindings)
+    )
 
     if relative.parts[0] == "domain":
         for module in sorted(candidates):
@@ -303,12 +457,32 @@ def scan(path: Path) -> list[str]:
                 problems.append(f"{path}: service cannot import {module}")
 
     if is_repository(path):
+        problems.extend(_repository_class_problems(path, tree, bindings))
         for module in sorted(candidates):
             if any(
                 _module_matches(module, prefix)
                 for prefix in ("fastapi", "app.api", "app.services")
             ):
                 problems.append(f"{path}: repository cannot import {module}")
+            if (
+                _module_matches(module, "app.db.pool")
+                or _module_matches(module, "app.db.repository_connection")
+                or _module_matches(module, "app.db.types")
+                or _module_matches(module, "psycopg_pool")
+                or module.rsplit(".", maxsplit=1)[-1] in RAW_CONNECTION_TYPES
+            ):
+                problems.append(
+                    f"{path}: repository cannot import raw connection dependency {module}"
+                )
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            method = _last_name(node.func, bindings)
+            if method in RAW_CONNECTION_METHODS:
+                problems.append(
+                    f"{path}:{node.lineno}: repository cannot acquire or operate a raw "
+                    f"connection with {method}(); use the injected RepositoryConnection"
+                )
 
     persistence_allowed = is_repository(path) or relative.parts[0] == "db"
     if not persistence_allowed:
@@ -316,7 +490,7 @@ def scan(path: Path) -> list[str]:
             if (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
-                and node.func.attr in {"execute", "executemany"}
+                and node.func.attr in REPOSITORY_SQL_METHODS
             ):
                 problems.append(
                     f"{path}:{node.lineno}: SQL execution belongs in a repository or db adapter"

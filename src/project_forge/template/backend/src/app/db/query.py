@@ -1,8 +1,29 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 
 from psycopg import sql
+
+_SQL_PARAMETER_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+_MEANINGLESS_PARAMETER_NAME = re.compile(r"^(?:arg|p|param|value)\d+$")
+
+
+def _validate_parameter_name(name: str) -> None:
+    if not _SQL_PARAMETER_NAME.fullmatch(name):
+        raise ValueError(f"invalid parameter name: {name!r}")
+    if _MEANINGLESS_PARAMETER_NAME.fullmatch(name):
+        raise ValueError(f"SQL parameter name must be descriptive: {name!r}")
+
+
+def _same_parameter_value(left: object, right: object) -> bool:
+    if left is right:
+        return True
+    try:
+        equal = left == right
+    except (TypeError, ValueError):
+        return False
+    return equal if isinstance(equal, bool) else False
 
 
 def escape_like(value: str, escape: str = "\\") -> str:
@@ -28,11 +49,16 @@ class SqlPredicateBuilder:
         self._parameters: dict[str, object] = {}
 
     def _bind(self, name: str, value: object) -> sql.Placeholder:
+        # Keep the local guard explicit so the static SQL harness can prove that
+        # this dynamic Placeholder name cannot alter placeholder syntax.
         if not name.isidentifier():
             raise ValueError(f"invalid parameter name: {name!r}")
+        _validate_parameter_name(name)
         if name in self._parameters:
-            raise ValueError(f"duplicate SQL parameter: {name}")
-        self._parameters[name] = value
+            if not _same_parameter_value(self._parameters[name], value):
+                raise ValueError(f"conflicting SQL parameter: {name}")
+        else:
+            self._parameters[name] = value
         return sql.Placeholder(name)
 
     def add(
@@ -43,13 +69,16 @@ class SqlPredicateBuilder:
         if not isinstance(predicate, sql.Composable):
             raise TypeError("predicate must be a psycopg.sql.Composable")
         if parameters:
-            invalid = sorted(name for name in parameters if not name.isidentifier())
-            if invalid:
-                raise ValueError(f"invalid parameter name: {invalid[0]!r}")
+            for name in parameters:
+                _validate_parameter_name(name)
             duplicates = self._parameters.keys() & parameters.keys()
-            if duplicates:
-                duplicate = sorted(duplicates)[0]
-                raise ValueError(f"duplicate SQL parameter: {duplicate}")
+            conflicts = sorted(
+                name
+                for name in duplicates
+                if not _same_parameter_value(self._parameters[name], parameters[name])
+            )
+            if conflicts:
+                raise ValueError(f"conflicting SQL parameter: {conflicts[0]}")
             self._parameters.update(parameters)
         self._predicates.append(predicate)
 

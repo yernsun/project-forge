@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 from datetime import UTC, datetime
+from types import TracebackType
 from typing import cast
 from unittest.mock import AsyncMock
 
@@ -14,7 +17,8 @@ from app.db.migrations.event_reliability import EVENT_RELIABILITY
 from app.db.migrations.events import EVENTS
 {% endif %}{% if sample %}from app.db.migrations.items import ITEMS
 {% endif %}from app.db.types import DbConnection
-from app.repositories.health import HealthRepository
+from app.repositories.base import RepositoryConnection
+from app.repositories.health import PostgresHealthRepository
 
 
 def migration(migration_id: str, dependencies: tuple[str, ...] = ()) -> Migration:
@@ -29,6 +33,13 @@ def test_migration_dag_is_topologically_sorted() -> None:
 def test_migration_dag_rejects_cycles() -> None:
     with pytest.raises(MigrationError, match="cycle"):
         ordered_migrations((migration("a", ("b",)), migration("b", ("a",))))
+
+
+def test_migration_dag_rejects_duplicates_and_missing_dependencies() -> None:
+    with pytest.raises(MigrationError, match="duplicate migration ID"):
+        ordered_migrations((migration("a"), migration("a")))
+    with pytest.raises(MigrationError, match="missing dependencies"):
+        ordered_migrations((migration("a", ("missing",)),))
 
 
 def test_checksum_covers_dependencies_and_sql() -> None:
@@ -53,17 +64,131 @@ async def test_current_validation_rejects_pending_but_history_validation_allows_
         await runner.validate()
 
 
-@pytest.mark.asyncio
-async def test_readiness_repository_requires_a_current_schema(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    validate_current = AsyncMock(side_effect=MigrationError("pending migration"))
-    monkeypatch.setattr(MigrationRunner, "validate_current", validate_current)
-    repository = HealthRepository(cast(DbConnection, object()))
+class _MigrationCursor:
+    def __init__(self) -> None:
+        self.fetchone_result: dict[str, object] | None = None
+        self.fetchall_result: list[dict[str, object]] = []
+        self.executed: list[tuple[object, object | None]] = []
 
-    with pytest.raises(MigrationError, match="pending migration"):
-        await repository.is_ready()
-    validate_current.assert_awaited_once_with()
+    async def __aenter__(self) -> _MigrationCursor:
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        return None
+
+    async def execute(self, query: object, parameters: object | None = None) -> None:
+        self.executed.append((query, parameters))
+
+    async def fetchone(self) -> dict[str, object] | None:
+        return self.fetchone_result
+
+    async def fetchall(self) -> list[dict[str, object]]:
+        return self.fetchall_result
+
+
+class _MigrationTransaction:
+    def __init__(self) -> None:
+        self.entered = False
+        self.exited = False
+
+    async def __aenter__(self) -> _MigrationTransaction:
+        self.entered = True
+        return self
+
+    async def __aexit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        _exc_value: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> None:
+        self.exited = True
+
+
+class _MigrationConnection:
+    def __init__(self) -> None:
+        self.cursor_value = _MigrationCursor()
+        self.transaction_value = _MigrationTransaction()
+
+    def cursor(self) -> _MigrationCursor:
+        return self.cursor_value
+
+    def transaction(self) -> _MigrationTransaction:
+        return self.transaction_value
+
+
+@pytest.mark.asyncio
+async def test_migration_runner_reads_history_status_and_applies_pending_rows() -> None:
+    first = migration("a")
+    second = migration("b", ("a",))
+    connection = _MigrationConnection()
+    runner = MigrationRunner(cast(DbConnection, connection), (first, second))
+
+    connection.cursor_value.fetchone_result = None
+    assert not await runner._tracking_exists()
+    connection.cursor_value.fetchone_result = {"table_name": "schema_migrations"}
+    assert await runner._tracking_exists()
+    applied_at = datetime.now(UTC)
+    connection.cursor_value.fetchall_result = [
+        {"migration_id": "a", "checksum": first.checksum, "applied_at": applied_at}
+    ]
+    assert await runner._applied() == {"a": (first.checksum, applied_at)}
+    runner._applied = AsyncMock(  # type: ignore[method-assign]
+        return_value={"a": (first.checksum, applied_at)}
+    )
+    statuses = await runner.status()
+    assert [status.state for status in statuses] == [
+        "applied",
+        "pending",
+    ]
+
+    runner.validate_history = AsyncMock()  # type: ignore[method-assign]
+    runner._applied = AsyncMock(return_value={})  # type: ignore[method-assign]
+    executed_before_up = len(connection.cursor_value.executed)
+    assert await runner.up() == ("a", "b")
+    assert connection.transaction_value.entered
+    assert connection.transaction_value.exited
+    assert len(connection.cursor_value.executed) - executed_before_up == 6
+
+
+@pytest.mark.asyncio
+async def test_migration_history_rejects_uninitialized_unknown_and_modified_rows() -> None:
+    known = migration("known")
+    runner = MigrationRunner(cast(DbConnection, object()), (known,))
+    runner._tracking_exists = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    with pytest.raises(MigrationError, match="not initialized"):
+        await runner.validate_history()
+
+    runner._tracking_exists = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    runner._applied = AsyncMock(  # type: ignore[method-assign]
+        return_value={"unknown": ("checksum", datetime.now(UTC))}
+    )
+    with pytest.raises(MigrationError, match="unknown migrations"):
+        await runner.validate_history()
+
+    runner._applied = AsyncMock(  # type: ignore[method-assign]
+        return_value={"known": ("modified", datetime.now(UTC))}
+    )
+    with pytest.raises(MigrationError, match="checksum mismatch"):
+        await runner.validate_history()
+
+
+@pytest.mark.asyncio
+async def test_readiness_repository_requires_exact_current_checksums() -> None:
+    connection = AsyncMock()
+    connection.fetch_one.return_value = {"table_name": "schema_migrations"}
+    connection.fetch_all.return_value = [
+        {"migration_id": "0001_core", "checksum": "old-checksum"}
+    ]
+    repository = PostgresHealthRepository(
+        cast(RepositoryConnection, connection),
+        expected_migrations={"0001_core": "current-checksum"},
+    )
+
+    assert await repository.is_ready() is False
+    connection.fetch_all.return_value = [
+        {"migration_id": "0001_core", "checksum": "current-checksum"}
+    ]
+    assert await repository.is_ready() is True
 
 
 {% if auth %}def test_auth_security_is_forward_only() -> None:

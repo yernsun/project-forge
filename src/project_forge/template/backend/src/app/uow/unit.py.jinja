@@ -1,33 +1,38 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import AbstractAsyncContextManager
+import sys
+from contextlib import AsyncExitStack
+from functools import cached_property
 from types import TracebackType
 
-from psycopg.transaction import AsyncTransaction
-
-{% if auth %}from app.auth.repository import AuthRepository
-{% endif %}from app.db.types import DbConnection
-{% if evented %}from app.events.repository import OutboxRepository, ProcessedMessageRepository
-{% endif %}from app.repositories.health import HealthRepository
-{% if sample %}from app.repositories.items import ItemRepository
+{% if auth %}from app.auth.repository import PostgresAuthRepository
+{% endif %}from app.db.registry import MIGRATIONS
+from app.db.repository_connection import PsycopgRepositoryConnection
+from app.db.types import DbPool
+{% if evented %}from app.events.repository import (
+    PostgresOutboxRepository,
+    PostgresProcessedMessageRepository,
+)
+{% endif %}from app.repositories.base import RepositoryConnection
+from app.repositories.health import PostgresHealthRepository
+{% if sample %}from app.repositories.items import PostgresItemRepository
 {% endif %}
+EXPECTED_MIGRATION_CHECKSUMS = {
+    migration.migration_id: migration.checksum for migration in MIGRATIONS
+}
+
 
 class UnitOfWork:
-    """One transaction, one task, one use only."""
+    """One pooled transaction, one task, one use, and lazy repositories."""
 
-    def __init__(self, connection: DbConnection) -> None:
-        self._connection = connection
-        self._transaction: AbstractAsyncContextManager[AsyncTransaction] | None = None
+    def __init__(self, pool: DbPool) -> None:
+        self._pool = pool
+        self._contexts = AsyncExitStack()
+        self._repository_connection: PsycopgRepositoryConnection | None = None
         self._owner: asyncio.Task[object] | None = None
         self._entered = False
         self._closed = False
-        self.health: HealthRepository
-{% if sample %}        self.items: ItemRepository
-{% endif %}{% if auth %}        self.auth: AuthRepository
-{% endif %}{% if evented %}        self.outbox: OutboxRepository
-        self.processed_messages: ProcessedMessageRepository
-{% endif %}
 
     async def __aenter__(self) -> UnitOfWork:
         if self._entered or self._closed:
@@ -37,14 +42,15 @@ class UnitOfWork:
             raise RuntimeError("UnitOfWork requires an active asyncio task")
         self._owner = owner
         self._entered = True
-        self._transaction = self._connection.transaction()
-        await self._transaction.__aenter__()
-        self.health = HealthRepository(self._connection)
-{% if sample %}        self.items = ItemRepository(self._connection)
-{% endif %}{% if auth %}        self.auth = AuthRepository(self._connection)
-{% endif %}{% if evented %}        self.outbox = OutboxRepository(self._connection)
-        self.processed_messages = ProcessedMessageRepository(self._connection)
-{% endif %}        return self
+        try:
+            connection = await self._contexts.enter_async_context(self._pool.connection())
+            await self._contexts.enter_async_context(connection.transaction())
+            self._repository_connection = PsycopgRepositoryConnection(connection, owner)
+            return self
+        except BaseException:
+            self._closed = True
+            await self._contexts.__aexit__(*sys.exc_info())
+            raise
 
     def assert_owner(self) -> None:
         if not self._entered or self._closed:
@@ -52,17 +58,58 @@ class UnitOfWork:
         if asyncio.current_task() is not self._owner:
             raise RuntimeError("UnitOfWork cannot cross asyncio task boundaries")
 
-    async def __aexit__(
+    def _require_connection(self) -> RepositoryConnection:
+        self.assert_owner()
+        connection = self._repository_connection
+        if connection is None:
+            raise RuntimeError("UnitOfWork repository connection was not initialized")
+        return connection
+
+    @cached_property
+    def health(self) -> PostgresHealthRepository:
+        """Return migration-aware readiness persistence for this transaction."""
+
+        return PostgresHealthRepository(
+            self._require_connection(),
+            expected_migrations=EXPECTED_MIGRATION_CHECKSUMS,
+        )
+
+{% if sample %}    @cached_property
+    def items(self) -> PostgresItemRepository:
+        """Return sample Item persistence for this transaction."""
+
+        return PostgresItemRepository(self._require_connection())
+
+{% endif %}{% if auth %}    @cached_property
+    def auth(self) -> PostgresAuthRepository:
+        """Return authentication persistence for this transaction."""
+
+        return PostgresAuthRepository(self._require_connection())
+
+{% endif %}{% if evented %}    @cached_property
+    def outbox(self) -> PostgresOutboxRepository:
+        """Return transactional outbox persistence for this transaction."""
+
+        return PostgresOutboxRepository(self._require_connection())
+
+    @cached_property
+    def processed_messages(self) -> PostgresProcessedMessageRepository:
+        """Return event idempotency persistence for this transaction."""
+
+        return PostgresProcessedMessageRepository(self._require_connection())
+
+{% endif %}    async def __aexit__(
         self,
         exc_type: type[BaseException] | None,
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
         self.assert_owner()
-        transaction = self._transaction
-        if transaction is None:
-            raise RuntimeError("UnitOfWork transaction was not initialized")
+        repository_connection = self._repository_connection
+        self._closed = True
+        if repository_connection is not None:
+            repository_connection.finish()
         try:
-            await transaction.__aexit__(exc_type, exc_value, traceback)
+            await self._contexts.__aexit__(exc_type, exc_value, traceback)
         finally:
-            self._closed = True
+            self._repository_connection = None

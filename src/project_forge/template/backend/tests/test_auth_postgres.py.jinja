@@ -14,7 +14,6 @@ from app.auth.errors import (
     InvalidCredentialsError,
     InvalidSessionError,
 )
-from app.auth.repository import AuthRepository
 from app.auth.service import AuthService
 from app.db.migration_engine import MigrationRunner
 from app.db.migrations.auth import AUTH
@@ -169,8 +168,8 @@ async def test_postgres_auth_lifecycle_and_constraints() -> None:
         assert rate_limits > 0
         with pytest.raises(InvalidSessionError):
             await service.resolve(issued.session_token.get_secret_value())
-        async with pool.connection() as connection:
-            assert await AuthRepository(connection).resolve_session(
+        async with UnitOfWorkFactory(pool)() as unit_of_work:
+            assert await unit_of_work.auth.resolve_session(
                 "not-a-real-token-hash", utc_now()
             ) is None
     finally:

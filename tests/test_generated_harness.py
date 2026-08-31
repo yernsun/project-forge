@@ -66,6 +66,10 @@ def assert_expected_action_refs(workflow: dict[str, object]) -> None:
 def test_static_generated_harnesses_pass(state: ProjectState, tmp_path: Path) -> None:
     destination = tmp_path / "project"
     render_fresh(state, destination)
+    harness_source = (destination / "harness/check.py").read_text(encoding="utf-8")
+    assert '"--cov-fail-under=90"' in harness_source
+    assert '"--env-file"' in harness_source
+    assert "harness-only-rate-limit-secret-at-least-32-bytes" in harness_source
     for script in ("check_architecture.py", "check_sql.py", "check_i18n.py"):
         subprocess.run(
             [sys.executable, f"harness/{script}"],
@@ -416,6 +420,54 @@ def test_architecture_harness_rejects_boundary_bypasses(tmp_path: Path) -> None:
             """,
             "API cannot access repositories through a unit of work",
         ),
+        (
+            "repository-raw-connection-import",
+            "repositories/forbidden_raw_import.py",
+            """
+            from app.db.types import DbConnection
+            from app.repositories.base import BaseRepository
+
+            class PostgresRawRepository(BaseRepository):
+                def __init__(self, connection: DbConnection) -> None:
+                    self.raw = connection
+            """,
+            "repository cannot import raw connection dependency app.db.types",
+        ),
+        (
+            "repository-cursor-access",
+            "repositories/forbidden_cursor.py",
+            """
+            from app.repositories.base import BaseRepository
+
+            class PostgresCursorRepository(BaseRepository):
+                async def run(self) -> None:
+                    async with self.connection.cursor() as cursor:
+                        await cursor.execute("SELECT 1")
+            """,
+            "repository cannot acquire or operate a raw connection with cursor()",
+        ),
+        (
+            "repository-missing-base",
+            "repositories/forbidden_base.py",
+            """
+            from typing import Protocol
+
+            class MissingBaseRepository(Protocol):
+                async def get(self) -> None: ...
+            """,
+            "every repository must inherit BaseRepository",
+        ),
+        (
+            "repository-outside-uow",
+            "wiring.py",
+            """
+            from app.repositories.items import PostgresItemRepository
+
+            def build(connection: object) -> PostgresItemRepository:
+                return PostgresItemRepository(connection)
+            """,
+            "PostgresItemRepository may only be instantiated by UnitOfWork",
+        ),
     )
 
     for name, relative, source, expected in cases:
@@ -431,6 +483,42 @@ def test_architecture_harness_rejects_boundary_bypasses(tmp_path: Path) -> None:
         violation.unlink()
         assert result.returncode == 1, f"{name} unexpectedly passed"
         assert expected in result.stderr, f"{name}: {result.stderr}"
+
+    unit_of_work = app_source / "uow/unit.py"
+    original_unit_of_work = unit_of_work.read_text(encoding="utf-8")
+    uow_cases = (
+        (
+            """
+
+            def forbidden_repository(self) -> PostgresItemRepository:
+                return PostgresItemRepository(self._require_connection())
+            """,
+            "UnitOfWork repositories must be created inside @cached_property methods",
+        ),
+        (
+            """
+
+            @cached_property
+            def forbidden_injection(self) -> PostgresItemRepository:
+                return PostgresItemRepository(object())
+            """,
+            "must inject self._require_connection()",
+        ),
+    )
+    for source, expected in uow_cases:
+        unit_of_work.write_text(
+            original_unit_of_work + dedent(source), encoding="utf-8"
+        )
+        result = subprocess.run(
+            [sys.executable, "harness/check_architecture.py"],
+            cwd=destination,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 1
+        assert expected in result.stderr
+    unit_of_work.write_text(original_unit_of_work, encoding="utf-8")
 
 
 def test_sql_harness_rejects_dynamic_composition_bypasses(tmp_path: Path) -> None:
@@ -483,7 +571,7 @@ def test_sql_harness_rejects_dynamic_composition_bypasses(tmp_path: Path) -> Non
             def build(value: object):
                 return pg_sql.Literal(value)
             """,
-            "psycopg.sql.Literal arguments must be static literals",
+            "psycopg.sql.Literal is forbidden",
         ),
         (
             "constructor-secondary-alias",
@@ -496,7 +584,7 @@ def test_sql_harness_rejects_dynamic_composition_bypasses(tmp_path: Path) -> Non
             def build(value: object):
                 return Second(value)
             """,
-            "psycopg.sql.Literal arguments must be static literals",
+            "psycopg.sql.Literal is forbidden",
         ),
         (
             "module-secondary-alias-concatenation",
@@ -521,6 +609,36 @@ def test_sql_harness_rejects_dynamic_composition_bypasses(tmp_path: Path) -> Non
             "psycopg.sql.Placeholder arguments must be static literals",
         ),
         (
+            "anonymous-placeholder",
+            """
+            from psycopg import sql
+
+            def build():
+                return sql.Placeholder()
+            """,
+            "Psycopg Placeholder must have a name",
+        ),
+        (
+            "meaningless-placeholder-name",
+            """
+            from psycopg import sql
+
+            def build():
+                return sql.Placeholder("p1")
+            """,
+            "SQL parameter 'p1' must have a descriptive name",
+        ),
+        (
+            "direct-composed-construction",
+            """
+            from psycopg import sql
+
+            def build():
+                return sql.Composed([sql.SQL("SELECT 1")])
+            """,
+            "do not instantiate psycopg.sql.Composed directly",
+        ),
+        (
             "sql-f-string",
             """
             from psycopg import sql
@@ -529,6 +647,173 @@ def test_sql_harness_rejects_dynamic_composition_bypasses(tmp_path: Path) -> Non
                 return sql.SQL(f"SELECT * FROM {table}")
             """,
             "SQL f-string is forbidden",
+        ),
+        (
+            "format-runtime-value",
+            """
+            from psycopg import sql
+
+            async def run(cursor, item_id: object):
+                query = sql.SQL("SELECT item_id FROM items WHERE item_id = {}").format(item_id)
+                await cursor.execute(query, prepare=True)
+            """,
+            "SQL.format replacements must be safe Composable objects",
+        ),
+        (
+            "join-raw-strings",
+            """
+            from psycopg import sql
+
+            def build():
+                return sql.SQL(", ").join(["item_id", "name"])
+            """,
+            "SQL.join items must be safe Composable objects",
+        ),
+        (
+            "positional-binary-parameter",
+            """
+            from psycopg import sql
+
+            QUERY = sql.SQL("SELECT item_id FROM items WHERE payload = %b")
+            """,
+            "positional %s/%b/%t",
+        ),
+        (
+            "numbered-dollar-parameter",
+            """
+            from psycopg import sql
+
+            QUERY = sql.SQL("SELECT item_id FROM items WHERE item_id = $1")
+            """,
+            "numbered dollar SQL parameters are forbidden",
+        ),
+        (
+            "non-mapping-execute-parameters",
+            """
+            from psycopg import sql
+
+            async def run(cursor, item_id: object):
+                await cursor.execute(
+                    sql.SQL("SELECT item_id FROM items WHERE item_id = %(item_id)s"),
+                    (item_id,),
+                    prepare=True,
+                )
+            """,
+            "named Psycopg parameters require a mapping",
+        ),
+        (
+            "executemany-positional-rows",
+            """
+            from psycopg import sql
+
+            async def run(cursor, item_id: object):
+                await cursor.executemany(
+                    sql.SQL(
+                        "INSERT INTO items (item_id) VALUES (%(item_id)s)"
+                    ),
+                    [(item_id,)],
+                )
+            """,
+            "execute_many requires an iterable of named parameter mappings",
+        ),
+        (
+            "execute-many-positional-rows",
+            """
+            from psycopg import sql
+
+            async def run(connection, item_id: object):
+                await connection.execute_many(
+                    sql.SQL(
+                        "INSERT INTO items (item_id) VALUES (%(item_id)s)"
+                    ),
+                    [(item_id,)],
+                )
+            """,
+            "positional batch rows are forbidden",
+        ),
+        (
+            "single-row-sql-loop",
+            """
+            from psycopg import sql
+
+            async def run(connection, item_ids: list[object]):
+                for item_id in item_ids:
+                    await connection.execute(
+                        sql.SQL(
+                            "DELETE FROM items WHERE item_id = %(item_id)s"
+                        ),
+                        {"item_id": item_id},
+                        prepare=True,
+                    )
+            """,
+            "do not execute single-row SQL inside a loop",
+        ),
+        (
+            "single-row-sql-comprehension",
+            """
+            from psycopg import sql
+
+            async def run(connection, item_ids: list[object]):
+                return [
+                    await connection.fetch_one(
+                        sql.SQL(
+                            "SELECT item_id FROM items WHERE item_id = %(item_id)s"
+                        ),
+                        {"item_id": item_id},
+                        prepare=True,
+                    )
+                    for item_id in item_ids
+                ]
+            """,
+            "do not execute single-row SQL inside a loop",
+        ),
+        (
+            "dynamic-copy-statement",
+            """
+            from collections.abc import Iterable, Sequence
+            from psycopg import sql
+
+            async def run(
+                connection,
+                fragment: sql.Composable,
+                rows: Iterable[Sequence[object]],
+            ):
+                query = sql.SQL("COPY ") + fragment
+                await connection.copy_rows(query, rows)
+            """,
+            "dynamic execute must contain a literal SELECT anchor",
+        ),
+        (
+            "quoted-placeholder",
+            """
+            from psycopg import sql
+
+            async def run(cursor, email: str):
+                await cursor.execute(
+                    sql.SQL("SELECT user_id FROM users WHERE email = '%(email)s'"),
+                    {"email": email},
+                    prepare=True,
+                )
+            """,
+            "SQL parameter placeholders must not be quoted",
+        ),
+        (
+            "invalid-placeholder-name",
+            """
+            from psycopg import sql
+
+            QUERY = sql.SQL("SELECT item_id FROM items WHERE item_id = %(item-id)s")
+            """,
+            "SQL parameter 'item-id' must use lower_snake_case",
+        ),
+        (
+            "unsupported-placeholder-format",
+            """
+            from psycopg import sql
+
+            QUERY = sql.SQL("SELECT item_id FROM items WHERE item_id = %(item_id)d")
+            """,
+            "SQL parameter 'item_id' uses unsupported %d format",
         ),
         (
             "dynamic-non-select-execute",
@@ -554,4 +839,112 @@ def test_sql_harness_rejects_dynamic_composition_bypasses(tmp_path: Path) -> Non
         )
         assert result.returncode == 1, f"{name} unexpectedly passed"
         assert expected in result.stderr, f"{name}: {result.stderr}"
+
+    repository.write_text(
+        dedent(
+            """
+            from psycopg import sql
+
+            SORTS = {
+                "name": sql.Identifier("name") + sql.SQL(" ASC"),
+                "created": sql.Identifier("created_at") + sql.SQL(" DESC"),
+            }
+
+            async def run(cursor, item_id: object, updated_at: object):
+                query = sql.SQL(
+                    "SELECT item_id FROM items "
+                    "WHERE item_id = {item_id} "
+                    "AND updated_at <= %(updated_at)s "
+                    "AND created_at <= %(updated_at)s "
+                    "ORDER BY {ordering}, item_id ASC"
+                ).format(
+                    item_id=sql.Placeholder("item_id"),
+                    ordering=SORTS["name"],
+                )
+                await cursor.execute(
+                    query,
+                    {"item_id": item_id, "updated_at": updated_at},
+                    prepare=True,
+                )
+                await cursor.executemany(
+                    sql.SQL(
+                        "INSERT INTO items (item_id) VALUES (%(item_id)s)"
+                    ),
+                    [{"item_id": item_id}],
+                )
+                for _ in range(1):
+                    await cursor.execute_many(
+                        sql.SQL(
+                            "INSERT INTO items (item_id) VALUES (%(item_id)s)"
+                        ),
+                        [{"item_id": item_id}],
+                    )
+                await cursor.copy_rows(
+                    sql.SQL("COPY items (item_id) FROM STDIN"),
+                    [],
+                )
+            """
+        ),
+        encoding="utf-8",
+    )
+    safe = subprocess.run(
+        [sys.executable, "harness/check_sql.py"],
+        cwd=destination,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert safe.returncode == 0, safe.stderr
     repository.unlink()
+
+    migration = destination / "backend/src/app/db/migrations/forbidden.py"
+    migration.write_text(
+        dedent(
+            """
+            from app.db.migration_engine import Migration
+
+            table_name = "items"
+            FORBIDDEN = Migration(
+                migration_id="9999_forbidden",
+                dependencies=(),
+                up_sql=f"CREATE TABLE {table_name} (item_id uuid PRIMARY KEY)",
+            )
+            """
+        ),
+        encoding="utf-8",
+    )
+    unsafe_migration = subprocess.run(
+        [sys.executable, "harness/check_sql.py"],
+        cwd=destination,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert unsafe_migration.returncode == 1
+    assert "migration up_sql must be one static string literal" in unsafe_migration.stderr
+    migration.unlink()
+
+    migration.write_text(
+        dedent(
+            """
+            from app.db.migration_engine import Migration
+
+            FORBIDDEN = Migration(
+                migration_id="9999_forbidden",
+                dependencies=(),
+                up_sql="INSERT INTO examples (name) VALUES (%s)",
+            )
+            """
+        ),
+        encoding="utf-8",
+    )
+    positional_migration = subprocess.run(
+        [sys.executable, "harness/check_sql.py"],
+        cwd=destination,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert positional_migration.returncode == 1
+    assert "positional %s/%b/%t" in positional_migration.stderr
+    migration.unlink()

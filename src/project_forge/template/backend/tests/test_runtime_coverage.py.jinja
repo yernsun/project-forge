@@ -1,0 +1,439 @@
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+{% if sample %}from types import SimpleNamespace
+{% endif %}from typing import cast
+{% if sample %}from unittest.mock import AsyncMock
+{% endif %}{% if sample or evented %}from uuid import UUID, uuid4
+{% endif %}
+import pytest
+from fastapi import FastAPI, HTTPException, Response
+from starlette.requests import Request
+from typer.testing import CliRunner
+
+import app.cli as cli_module
+import app.main as main_module
+from app.api.dependencies import get_unit_of_work_factory, prevent_auth_caching
+from app.api.health import readiness
+{% if sample %}from app.api.items import (
+    CreateItemRequest,
+    create_item,
+    get_item,
+    list_items,
+)
+{% endif %}{% if auth %}from app.auth.errors import WorkspaceAccessDeniedError
+from app.auth.models import SessionPrincipal
+{% endif %}from app.db.migration_engine import MigrationState, MigrationStatus
+{% if sample %}from app.domain.items import Item, ItemFilter, ItemSort, ItemStatus
+{% endif %}{% if evented %}from app.events.models import OutboxStatus
+{% endif %}{% if sample %}from app.services.items import ItemNotFoundError, ItemService
+{% endif %}from app.settings import Settings
+from app.uow.factory import UnitOfWorkFactory
+
+
+class _AsyncContext:
+    def __init__(self, value: object) -> None:
+        self.value = value
+
+    async def __aenter__(self) -> object:
+        return self.value
+
+    async def __aexit__(self, *_: object) -> None:
+        return None
+
+
+class _Pool:
+    def __init__(self) -> None:
+        self.connection_value = object()
+        self.opened = False
+        self.closed = False
+
+    async def open(self) -> None:
+        self.opened = True
+
+    async def close(self) -> None:
+        self.closed = True
+
+    def connection(self) -> _AsyncContext:
+        return _AsyncContext(self.connection_value)
+
+
+class _MigrationRunner:
+    def __init__(self) -> None:
+        self.validated = False
+        self.current_validated = False
+        self.applied: tuple[str, ...] = ("0001_core",)
+
+    async def status(self) -> tuple[MigrationStatus, ...]:
+        return (
+            MigrationStatus(
+                migration_id="0001_core",
+                checksum="a" * 64,
+                state=MigrationState.APPLIED,
+                applied_at=datetime.now(UTC),
+            ),
+        )
+
+    async def validate(self) -> None:
+        self.validated = True
+
+    async def validate_current(self) -> None:
+        self.current_validated = True
+
+    async def up(self) -> tuple[str, ...]:
+        return self.applied
+
+
+@pytest.mark.asyncio
+async def test_cli_runner_and_application_lifespan_close_their_pools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli_pool = _Pool()
+    created_runners: list[_MigrationRunner] = []
+
+    def migration_runner(_connection: object, _migrations: object) -> _MigrationRunner:
+        runner = _MigrationRunner()
+        created_runners.append(runner)
+        return runner
+
+    monkeypatch.setattr(cli_module, "get_settings", lambda: Settings())
+    monkeypatch.setattr(cli_module, "create_pool", lambda _database_url: cli_pool)
+    monkeypatch.setattr(cli_module, "MigrationRunner", migration_runner)
+
+    async with cli_module._runner() as runner:
+        assert runner is created_runners[0]
+    assert cli_pool.opened and cli_pool.closed
+
+    app_pool = _Pool()
+    monkeypatch.setattr(main_module, "get_settings", lambda: Settings())
+    monkeypatch.setattr(main_module, "create_pool", lambda _database_url: app_pool)
+    monkeypatch.setattr(main_module, "MigrationRunner", migration_runner)
+    application = FastAPI()
+    async with main_module.lifespan(application):
+        assert application.state.database_pool is app_pool
+        assert isinstance(application.state.unit_of_work_factory, UnitOfWorkFactory)
+        assert created_runners[-1].current_validated
+    assert app_pool.opened and app_pool.closed
+
+
+def test_migration_and_configuration_cli_commands_cover_operator_outputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _MigrationRunner()
+
+    @asynccontextmanager
+    async def fake_runner() -> AsyncIterator[_MigrationRunner]:
+        yield runner
+
+    class _Settings:
+        def safe_summary(self) -> dict[str, object]:
+            return {
+                "environment": "development",
+                "database_configured": True,
+{% if evented %}                "redis_configured": True,
+{% endif %}{% if auth %}                "authentication": {
+                    "allowed_origins": ["http://localhost:5173"],
+                    "cookies_secure": False,
+                    "signup_enabled": True,
+                    "trusted_proxies": ["127.0.0.1"],
+                },
+{% endif %}            }
+
+    monkeypatch.setattr(cli_module, "_runner", fake_runner)
+    monkeypatch.setattr(cli_module, "Settings", _Settings)
+    command = CliRunner()
+
+    status_result = command.invoke(cli_module.app, ["migrate", "status"])
+    assert status_result.exit_code == 0
+    assert "applied" in status_result.stdout
+    assert "0001_core" in status_result.stdout
+
+    validate_result = command.invoke(cli_module.app, ["migrate", "validate"])
+    assert validate_result.exit_code == 0
+    assert "migration history is valid" in validate_result.stdout
+    assert runner.validated
+
+    up_result = command.invoke(cli_module.app, ["migrate", "up"])
+    assert up_result.exit_code == 0
+    assert "applied: 0001_core" in up_result.stdout
+    runner.applied = ()
+    empty_up_result = command.invoke(cli_module.app, ["migrate", "up"])
+    assert empty_up_result.exit_code == 0
+    assert "applied: none" in empty_up_result.stdout
+
+    config_result = command.invoke(cli_module.app, ["config", "check"])
+    assert config_result.exit_code == 0
+    assert "environment=development" in config_result.stdout
+    assert "database_configured=true" in config_result.stdout
+{% if evented %}    assert "redis_configured=true" in config_result.stdout
+{% endif %}{% if auth %}    assert "allowed_origins=http://localhost:5173" in config_result.stdout
+    assert "cookies_secure=false" in config_result.stdout
+    assert "signup_enabled=true" in config_result.stdout
+    assert "trusted_proxies=127.0.0.1" in config_result.stdout
+{% endif %}
+
+
+@pytest.mark.asyncio
+async def test_dependencies_and_readiness_cover_healthy_and_unhealthy_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory = cast(UnitOfWorkFactory, object())
+    application = FastAPI()
+    application.state.unit_of_work_factory = factory
+    request = Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": "/health/ready",
+            "raw_path": b"/health/ready",
+            "query_string": b"",
+            "headers": [],
+            "app": application,
+        }
+    )
+    assert get_unit_of_work_factory(request) is factory
+
+    response = Response()
+    prevent_auth_caching(response)
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["Pragma"] == "no-cache"
+
+    class _HealthService:
+        ready = True
+
+        def __init__(self, _factory: UnitOfWorkFactory) -> None:
+            pass
+
+        async def is_ready(self) -> bool:
+            return self.ready
+
+    monkeypatch.setattr("app.api.health.HealthService", _HealthService)
+    assert (await readiness(factory)).status == "ready"
+    _HealthService.ready = False
+    with pytest.raises(HTTPException) as error:
+        await readiness(factory)
+    assert error.value.status_code == 503
+
+
+{% if auth or evented %}class _ServicePool(_Pool):
+    pass
+
+
+{% endif %}{% if auth %}def test_auth_purge_cli_executes_dry_run_and_delete_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pools: list[_ServicePool] = []
+    dry_runs: list[bool] = []
+
+    def create_service_pool(_database_url: str) -> _ServicePool:
+        pool = _ServicePool()
+        pools.append(pool)
+        return pool
+
+    class _AuthService:
+        def __init__(self, _factory: UnitOfWorkFactory, _settings: Settings) -> None:
+            pass
+
+        async def purge_expired(self, *, dry_run: bool) -> tuple[int, int]:
+            dry_runs.append(dry_run)
+            return (2, 3)
+
+    monkeypatch.setattr(cli_module, "get_settings", lambda: Settings())
+    monkeypatch.setattr(cli_module, "create_pool", create_service_pool)
+    monkeypatch.setattr(cli_module, "AuthService", _AuthService)
+    command = CliRunner()
+
+    dry_result = command.invoke(cli_module.app, ["auth", "purge-expired", "--dry-run"])
+    assert dry_result.exit_code == 0
+    assert "would_purge sessions=2 rate_limits=3" in dry_result.stdout
+    delete_result = command.invoke(cli_module.app, ["auth", "purge-expired"])
+    assert delete_result.exit_code == 0
+    assert "purged sessions=2 rate_limits=3" in delete_result.stdout
+    assert dry_runs == [True, False]
+    assert all(pool.opened and pool.closed for pool in pools)
+
+
+{% endif %}{% if evented %}def test_event_cli_covers_text_json_dry_run_and_retry_outputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pools: list[_ServicePool] = []
+    retried_limits: list[int] = []
+
+    def create_service_pool(_database_url: str) -> _ServicePool:
+        pool = _ServicePool()
+        pools.append(pool)
+        return pool
+
+    class _OutboxService:
+        def __init__(self, _factory: UnitOfWorkFactory) -> None:
+            pass
+
+        async def status(self) -> OutboxStatus:
+            return OutboxStatus(ready=1, deferred=2, failed=7, published=4)
+
+        async def retry_failed(self, limit: int) -> tuple[UUID, ...]:
+            retried_limits.append(limit)
+            return (uuid4(), uuid4())
+
+    monkeypatch.setattr(cli_module, "get_settings", lambda: Settings())
+    monkeypatch.setattr(cli_module, "create_pool", create_service_pool)
+    monkeypatch.setattr(cli_module, "OutboxService", _OutboxService)
+    command = CliRunner()
+
+    text_result = command.invoke(cli_module.app, ["events", "status"])
+    assert text_result.exit_code == 0
+    assert "ready=1" in text_result.stdout
+    assert "published=4" in text_result.stdout
+    json_result = command.invoke(cli_module.app, ["events", "status", "--json"])
+    assert json_result.exit_code == 0
+    assert '"failed": 7' in json_result.stdout
+    dry_result = command.invoke(
+        cli_module.app, ["events", "retry-failed", "--dry-run", "--limit", "3"]
+    )
+    assert dry_result.exit_code == 0
+    assert "would_retry=3" in dry_result.stdout
+    retry_result = command.invoke(
+        cli_module.app, ["events", "retry-failed", "--limit", "2"]
+    )
+    assert retry_result.exit_code == 0
+    assert "retried=2" in retry_result.stdout
+    assert retried_limits == [2]
+    assert all(pool.opened and pool.closed for pool in pools)
+
+
+{% endif %}{% if sample %}class _ItemRepository:
+    def __init__(self) -> None:
+        self.item: Item | None = None
+        self.listed: tuple[Item, ...] = ()
+
+    async def add(self, item: Item) -> Item:
+        self.item = item
+        self.listed = (item,)
+        return item
+
+    async def get(self, _item_id: UUID, _workspace_id: UUID | None) -> Item | None:
+        return self.item
+
+    async def list(
+        self, _workspace_id: UUID | None, _filters: ItemFilter
+    ) -> tuple[Item, ...]:
+        return self.listed
+
+
+class _ItemUnitOfWork:
+    def __init__(self, *, member: bool = True) -> None:
+        self.items = _ItemRepository()
+{% if auth %}        self.auth = SimpleNamespace(is_workspace_member=AsyncMock(return_value=member))
+{% endif %}{% if evented %}        self.outbox = SimpleNamespace(append=AsyncMock())
+{% endif %}
+
+    async def __aenter__(self) -> _ItemUnitOfWork:
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        return None
+
+
+class _ItemFactory:
+    def __init__(self, unit_of_work: _ItemUnitOfWork) -> None:
+        self.unit_of_work = unit_of_work
+
+    def __call__(self) -> _ItemUnitOfWork:
+        return self.unit_of_work
+
+
+{% if auth %}def _principal() -> SessionPrincipal:
+    return SessionPrincipal(
+        session_id=uuid4(),
+        user_id=uuid4(),
+        email="person@example.com",
+        csrf_hash="csrf-hash",
+        expires_at=datetime(2030, 1, 1, tzinfo=UTC),
+    )
+
+
+{% endif %}@pytest.mark.asyncio
+async def test_item_api_and_service_cover_create_get_list_and_not_found() -> None:
+    unit_of_work = _ItemUnitOfWork()
+    factory = cast(UnitOfWorkFactory, _ItemFactory(unit_of_work))
+{% if auth %}    principal = _principal()
+    workspace_id = uuid4()
+    created = await create_item(
+        CreateItemRequest(name="Example", description=None),
+        factory,
+        principal,
+        workspace_id,
+    )
+{% else %}    created = await create_item(
+        CreateItemRequest(name="Example", description=None),
+        factory,
+    )
+{% endif %}    assert created.name == "Example"
+    assert created.status is ItemStatus.ACTIVE
+{% if evented %}    unit_of_work.outbox.append.assert_awaited_once()
+{% endif %}
+
+{% if auth %}    fetched = await get_item(created.item_id, factory, principal, workspace_id)
+{% else %}    fetched = await get_item(created.item_id, factory)
+{% endif %}    assert fetched.item_id == created.item_id
+
+{% if auth %}    listed = await list_items(
+        factory,
+        principal,
+        workspace_id,
+        name="Exam",
+        status_filter=ItemStatus.ACTIVE,
+        description_is_null=True,
+        sort=ItemSort.NAME_ASC,
+        limit=10,
+        offset=2,
+    )
+{% else %}    listed = await list_items(
+        factory,
+        name="Exam",
+        status_filter=ItemStatus.ACTIVE,
+        description_is_null=True,
+        sort=ItemSort.NAME_ASC,
+        limit=10,
+        offset=2,
+    )
+{% endif %}    assert [item.item_id for item in listed.items] == [created.item_id]
+
+    unit_of_work.items.item = None
+    service = ItemService(factory)
+    with pytest.raises(ItemNotFoundError):
+        await service.get(
+            uuid4(),
+{% if auth %}            workspace_id,
+            principal.user_id,
+{% else %}            None,
+{% endif %}        )
+
+
+{% if auth %}@pytest.mark.asyncio
+async def test_item_service_rejects_missing_workspace_and_non_members() -> None:
+    principal = _principal()
+    service = ItemService(cast(UnitOfWorkFactory, _ItemFactory(_ItemUnitOfWork())))
+    with pytest.raises(ValueError, match="workspace_id is required"):
+        await service.create(
+            workspace_id=None,
+            user_id=principal.user_id,
+            name="Missing workspace",
+            description=None,
+        )
+    with pytest.raises(ValueError, match="workspace_id is required"):
+        await service.get(uuid4(), None, principal.user_id)
+    with pytest.raises(ValueError, match="workspace_id is required"):
+        await service.list(None, ItemFilter(), principal.user_id)
+
+    denied = ItemService(
+        cast(UnitOfWorkFactory, _ItemFactory(_ItemUnitOfWork(member=False)))
+    )
+    with pytest.raises(WorkspaceAccessDeniedError):
+        await denied.list(uuid4(), ItemFilter(), principal.user_id)
+{% endif %}
+{% endif %}
