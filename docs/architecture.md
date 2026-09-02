@@ -38,8 +38,9 @@ validation logs without bodies, credentials, cookies, or secrets. `app config ch
 only a redacted effective-settings summary. Event relays reclaim stale pending deliveries, bound
 attempts, park failed outbox rows, and require explicit operator replay after remediation.
 
-The generated frontend keeps server state in Vue Query, client-owned locale and per-user workspace
-selection in Pinia, DTO types in one of four real FastAPI OpenAPI contracts, and locale state in one
+The generated frontend keeps server state in Vue Query, client-owned locale, Aura color-scheme
+preference, and per-user workspace selection in Pinia, DTO types in one of four real FastAPI OpenAPI
+contracts, and locale state in one
 i18n module that also updates PrimeVue's locale object. Its application shell has explicit loading,
 guest, and authenticated states; protected queries do not mount for guests.
 

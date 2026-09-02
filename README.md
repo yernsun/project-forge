@@ -32,7 +32,8 @@ Optional capabilities are additive:
 Generated backends support Python `>=3.11` and use Python 3.13 in Docker by default, with FastAPI,
 Pydantic v2, Psycopg 3, PostgreSQL 16, forward migrations, and repository-owned SQL. Generated
 frontends support Node LTS `>=22.13 <23 || >=24 <25` and use Node 24 for Docker and generated CI,
-with Vue 3, Vite, TypeScript, PrimeVue, Vue Query, Pinia for client-owned state, and
+with Vue 3, Vite, TypeScript, PrimeVue using Aura with persisted system/light/dark switching,
+Vue Query, Pinia for client-owned state, and
 `zh-CN`/`en-US` catalogs.
 
 ## Prerequisites

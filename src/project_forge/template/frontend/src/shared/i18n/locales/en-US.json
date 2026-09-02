@@ -1,9 +1,11 @@
 {
   "locales": { "zh-CN": "简体中文", "en-US": "English" },
+  "themes": { "system": "Use system setting", "light": "Light", "dark": "Dark" },
   "app": {
     "title": "Application workspace",
     "subtitle": "Initialized with composable engineering capabilities",
     "language": "Language",
+    "theme": "Theme (Aura)",
     "ready": "Project foundation is ready",
     "retry": "Try again"
   },

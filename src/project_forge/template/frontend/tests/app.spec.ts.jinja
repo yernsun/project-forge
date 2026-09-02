@@ -9,7 +9,7 @@ import App from '@/app/App.vue'
 import { i18n, initialLocale } from '@/shared/i18n'
 
 describe('application shell', () => {
-  it('renders the public shell and synchronizes locale-owned client state', async () => {
+  it('renders the public shell and synchronizes client-owned preferences', async () => {
 {% if sample %}    const item = {
       itemId: '00000000-0000-4000-8000-000000000001',
       name: 'Example',
@@ -40,9 +40,14 @@ describe('application shell', () => {
     await flushPromises()
     expect(wrapper.get('h1').text()).not.toBe('')
     const nextLocale = initialLocale === 'zh-CN' ? 'en-US' : 'zh-CN'
-    await wrapper.get('select').setValue(nextLocale)
+    await wrapper.get('.locale-control select').setValue(nextLocale)
     expect(document.documentElement.lang).toBe(nextLocale)
     expect(localStorage.getItem('app.locale')).toBe(nextLocale)
+
+    await wrapper.get('.theme-control select').setValue('dark')
+    expect(document.documentElement.classList.contains('app-dark')).toBe(true)
+    expect(document.documentElement.dataset.theme).toBe('dark')
+    expect(localStorage.getItem('app.theme')).toBe('dark')
 
 {% if sample %}    expect(fetchMock).toHaveBeenCalled()
     await wrapper.get('[data-testid="item-name"]').setValue('Created from a test')
@@ -51,6 +56,8 @@ describe('application shell', () => {
     expect(fetchMock.mock.calls.some(([request]) => request.method === 'POST')).toBe(true)
 {% endif %}    wrapper.unmount()
     queryClient.clear()
+    document.documentElement.classList.remove('app-dark')
+    localStorage.removeItem('app.theme')
   })
 })
 {% else %}describe('application shell', () => {

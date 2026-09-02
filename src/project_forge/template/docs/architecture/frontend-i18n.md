@@ -1,9 +1,19 @@
 # Frontend, authentication, and i18n
 
 Vue Query owns remote state and cache invalidation. Pinia owns browser-only choices: the active
-locale and, when authentication is enabled, the selected workspace ID. A selected workspace is
+locale, the color-scheme preference, and, when authentication is enabled, the selected workspace
+ID. A selected workspace is
 always reconciled against `/api/v1/workspaces`; a value restored from local storage never grants
 access by itself.
+
+## Theme
+
+PrimeVue styled mode uses the Aura preset by default. The application offers system, light, and dark
+color-scheme preferences, persists the choice under `app.theme`, and toggles `.app-dark` on the
+document root. System mode follows `prefers-color-scheme` changes while the application is running.
+Application CSS uses the same selector and semantic custom properties, so PrimeVue components and
+the surrounding shell always change together. Theme preference is client-owned state and therefore
+belongs in Pinia; it must not be sent to the API or stored in Vue Query.
 
 ## Session flow
 

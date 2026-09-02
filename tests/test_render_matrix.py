@@ -178,6 +178,13 @@ def test_every_valid_combination_renders(state: ProjectState, tmp_path: Path) ->
                     encoding="utf-8"
                 )
             )
+        main_source = (destination / "frontend/src/main.ts").read_text(encoding="utf-8")
+        assert "import Aura from '@primeuix/themes/aura'" in main_source
+        assert "preset: Aura" in main_source
+        assert "darkModeSelector: '.app-dark'" in main_source
+        assert (destination / "frontend/src/shared/theme.ts").is_file()
+        assert (destination / "frontend/src/shared/stores/theme.ts").is_file()
+        assert (destination / "frontend/tests/theme.spec.ts").is_file()
 
 
 @pytest.mark.parametrize(

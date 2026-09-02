@@ -31,7 +31,8 @@ Docker 拓扑、CI、双语 i18n，以及可选的认证与事件处理能力。
 后端支持 Python `>=3.11`，Docker 默认使用 Python 3.13，并包含 FastAPI、Pydantic v2、
 Psycopg 3、PostgreSQL 16、前向迁移和 Repository SQL；前端支持 Node LTS
 `>=22.13 <23 || >=24 <25`，Docker 和生成项目 CI 默认使用 Node 24，并包含 Vue 3、Vite、TypeScript、PrimeVue、
-Vue Query、仅保存客户端状态的 Pinia，以及 `zh-CN`/`en-US` 语言包。
+默认 Aura 主题及持久化的跟随系统/浅色/深色切换、Vue Query、仅保存客户端状态的 Pinia，
+以及 `zh-CN`/`en-US` 语言包。
 
 ## 环境要求
 

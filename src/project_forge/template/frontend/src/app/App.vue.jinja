@@ -3,6 +3,7 @@
 {% endif %}{% if auth %}import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 {% endif %}import { usePrimeVue } from 'primevue/config'
+import { onBeforeUnmount, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 {% if auth %}
 import AuthPanel from '@/features/auth/AuthPanel.vue'
@@ -14,18 +15,29 @@ import { useWorkspaceStore } from '@/features/auth/workspace'
 {% endif %}{% if sample %}import ItemsPage from '@/features/items/ItemsPage.vue'
 {% endif %}import { supportedLocales, type AppLocale } from '@/shared/i18n'
 import { useLocaleStore } from '@/shared/stores/locale'
+import { useThemeStore } from '@/shared/stores/theme'
+import { themePreferences, type ThemePreference } from '@/shared/theme'
 
 const { t } = useI18n()
 const localeStore = useLocaleStore()
+const themeStore = useThemeStore()
 const primeVue = usePrimeVue()
 {% if auth %}const { sessionQuery, session, state: authState } = useSessionState()
 {% if sample %}
 const workspaceStore = useWorkspaceStore()
 {% endif %}
 {% endif %}
+onMounted(themeStore.start)
+onBeforeUnmount(themeStore.stop)
+
 function changeLocale(event: Event): void {
   const next = (event.target as HTMLSelectElement).value as AppLocale
   localeStore.setLocale(next, primeVue)
+}
+
+function changeTheme(event: Event): void {
+  const next = (event.target as HTMLSelectElement).value as ThemePreference
+  themeStore.setTheme(next)
 }
 </script>
 
@@ -37,17 +49,30 @@ function changeLocale(event: Event): void {
         <h1 v-text="t('app.title')" />
         <p class="subtitle" v-text="t('app.subtitle')" />
       </div>
-      <label class="locale-control">
-        <span v-text="t('app.language')" />
-        <select :value="localeStore.locale" @change="changeLocale">
-          <option
-            v-for="locale in supportedLocales"
-            :key="locale"
-            :value="locale"
-            v-text="t(`locales.${locale}`)"
-          />
-        </select>
-      </label>
+      <div class="preference-controls">
+        <label class="preference-control locale-control">
+          <span v-text="t('app.language')" />
+          <select :value="localeStore.locale" @change="changeLocale">
+            <option
+              v-for="locale in supportedLocales"
+              :key="locale"
+              :value="locale"
+              v-text="t(`locales.${locale}`)"
+            />
+          </select>
+        </label>
+        <label class="preference-control theme-control">
+          <span v-text="t('app.theme')" />
+          <select :value="themeStore.preference" @change="changeTheme">
+            <option
+              v-for="theme in themePreferences"
+              :key="theme"
+              :value="theme"
+              v-text="t(`themes.${theme}`)"
+            />
+          </select>
+        </label>
+      </div>
     </header>
     <main>
 {% if auth %}      <section v-if="sessionQuery.isError.value" class="content-card auth-status" role="alert">

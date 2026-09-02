@@ -23,7 +23,7 @@ from app.api.health import readiness
     get_item,
     list_items,
 )
-{% endif %}{% if auth %}from app.auth.errors import WorkspaceAccessDeniedError
+{% endif %}{% if auth and sample %}from app.auth.errors import WorkspaceAccessDeniedError
 from app.auth.models import SessionPrincipal
 {% endif %}from app.db.migration_engine import MigrationState, MigrationStatus
 {% if sample %}from app.domain.items import Item, ItemFilter, ItemSort, ItemStatus

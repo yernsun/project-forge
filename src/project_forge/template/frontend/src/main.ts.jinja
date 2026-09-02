@@ -7,14 +7,20 @@ import { createApp } from 'vue'
 
 import App from './app/App.vue'
 import { i18n, initialLocale, primeLocales } from './shared/i18n'
+import { applyTheme, readThemePreference } from './shared/theme'
 import './styles.css'
+
+applyTheme(readThemePreference())
 
 createApp(App)
   .use(createPinia())
   .use(i18n)
   .use(VueQueryPlugin)
   .use(PrimeVue, {
-    theme: { preset: Aura },
+    theme: {
+      preset: Aura,
+      options: { darkModeSelector: '.app-dark' },
+    },
     locale: primeLocales[initialLocale],
     ripple: true,
   })

@@ -1,9 +1,11 @@
 {
   "locales": { "zh-CN": "简体中文", "en-US": "English" },
+  "themes": { "system": "跟随系统", "light": "浅色", "dark": "深色" },
   "app": {
     "title": "应用工作台",
     "subtitle": "由可组合的工程能力初始化",
     "language": "语言",
+    "theme": "主题（Aura）",
     "ready": "基础工程已就绪",
     "retry": "重试"
   },

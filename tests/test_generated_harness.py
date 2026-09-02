@@ -79,6 +79,15 @@ def test_static_generated_harnesses_pass(state: ProjectState, tmp_path: Path) ->
             text=True,
         )
 
+    if state.has_backend:
+        subprocess.run(
+            ["ruff", "check", "tests/test_runtime_coverage.py"],
+            cwd=destination / "backend",
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
     workflow = yaml.safe_load(
         (destination / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     )
