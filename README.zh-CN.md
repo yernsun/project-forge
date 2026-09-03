@@ -34,6 +34,10 @@ Psycopg 3、PostgreSQL 16、前向迁移和 Repository SQL；前端支持 Node L
 默认 Aura 主题及持久化的跟随系统/浅色/深色切换、Vue Query、仅保存客户端状态的 Pinia，
 以及 `zh-CN`/`en-US` 语言包。
 
+所有生成后端还包含 `logs/<domain>/<instance>/` 进程隔离轮转 JSONL 日志、独立的
+business/debug/error/SQL 通道、请求与事件关联、不含参数值的 SQL 耗时、递归 secret
+脱敏、observability skill/rule，以及生成 harness 中的静态日志契约。
+
 ## 环境要求
 
 | 工具 | 何时必需 | 版本 |

@@ -8,9 +8,9 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.api.observability import current_request_id
+from app.observability import LogEvent, LogOutcome, log_event
 
-logger = logging.getLogger("app.validation")
+logger = logging.getLogger(__name__)
 
 
 def _is_auth_related_path(path: str) -> bool:
@@ -69,15 +69,15 @@ def install_error_handlers(app: FastAPI) -> None:
         request: Request, error: RequestValidationError
     ) -> JSONResponse:
         if _is_auth_related_path(request.url.path):
-            logger.warning(
+            log_event(
+                logger,
+                logging.WARNING,
                 "request validation failed",
-                extra={
-                    "event": "request_validation_failed",
-                    "request_id": current_request_id(),
-                    "method": request.method,
-                    "path": request.url.path,
-                    "validation_errors": _diagnostic_validation_errors(error),
-                },
+                event=LogEvent.HTTP_REQUEST_VALIDATION_REJECTED,
+                outcome=LogOutcome.REJECTED,
+                method=request.method,
+                path=request.url.path,
+                validation_errors=_diagnostic_validation_errors(error),
             )
             return JSONResponse(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,

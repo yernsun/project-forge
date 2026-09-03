@@ -113,7 +113,20 @@ uv run {{ command_name }} events retry-failed --limit 100 --dry-run
 
 relay 会回收 Redis 中长时间 pending 的消息，并在达到有界尝试次数后停放 PostgreSQL
 outbox 行。重放前先检查状态；只应在修复根因后显式重试停放行。
-{% endif %}{% endif %}
+{% endif %}
+
+### 日志文件
+
+后端进程把轮转 JSON Lines 写入
+`logs/<domain>/<instance>/{business,debug,error,sql}.log`。API、CLI、event relay 和新增 worker
+使用独立 domain；共享文件系统的每个并发进程都必须使用唯一 `APP_LOG_INSTANCE_ID`。
+Compose 将 `/app/logs` 持久化到 `runtime-logs` volume。
+
+`business.log` 保存非 SQL INFO+，`debug.log` 保存 DEBUG，`error.log` 保存 WARNING+，
+`sql.log` 保存不含参数值的 SQL 耗时。日志禁止包含 SQL 参数值、请求 body/header、事件
+payload、secret 和原始异常消息。配置、路由、关联上下文与扩展规则见
+[结构化日志与文件隔离](docs/architecture/logging.md)。
+{% endif %}
 
 {% if profile != 'backend' %}### 前端
 

@@ -20,7 +20,7 @@ from typer.testing import CliRunner
 import app.auth.api as auth_api
 import app.auth.service as auth_service_module
 from app.api.errors import install_error_handlers
-from app.api.observability import RequestContextMiddleware
+from app.api.observability import RequestContextMiddleware, current_request_id
 from app.auth.api import SignupRequest, _set_session_cookies, get_unsafe_session
 from app.auth.errors import (
     AuthenticationRequiredError,
@@ -549,10 +549,10 @@ def test_auth_validation_errors_redact_input_and_disable_caching(
     app.add_middleware(RequestContextMiddleware)
     warnings: list[dict[str, object]] = []
 
-    def capture_warning(_message: str, *, extra: dict[str, object]) -> None:
-        warnings.append(extra)
+    def capture_event(*_: object, **fields: object) -> None:
+        warnings.append({"request_id": current_request_id(), **fields})
 
-    monkeypatch.setattr("app.api.errors.logger.warning", capture_warning)
+    monkeypatch.setattr("app.api.errors.log_event", capture_event)
 
     @app.post("/api/v1/auth/signup")
     async def validate_signup(_request: SignupRequest) -> None:

@@ -462,6 +462,7 @@ async def test_relay_forever_marks_success_and_releases_failures(
     settings = SimpleNamespace(
         database_url="postgresql://example",
         redis_url="redis://example",
+        log_instance_id="relay-test",
         event_relay_max_attempts=5,
         event_relay_poll_seconds=0.01,
     )
@@ -491,9 +492,15 @@ def test_relay_command_configures_logging_and_runs_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     configured = AsyncMock()
-    monkeypatch.setattr(worker_module, "configure_logging", lambda: None)
+    logging_calls: list[str] = []
+    monkeypatch.setattr(
+        worker_module,
+        "configure_logging",
+        lambda _settings, *, domain: logging_calls.append(domain),
+    )
     monkeypatch.setattr(worker_module, "relay_forever", configured)
     worker_module.relay()
+    assert logging_calls == ["event-relay"]
     configured.assert_awaited_once()
 
 

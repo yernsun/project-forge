@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import logging
 from uuid import UUID, uuid4
 
 {% if auth %}from app.auth.errors import WorkspaceAccessDeniedError
 {% endif %}from app.domain.base import utc_now
 from app.domain.items import Item, ItemFilter, ItemStatus
 {% if evented %}from app.events.models import EventEnvelope
-{% endif %}from app.uow.factory import UnitOfWorkFactory
+{% endif %}from app.observability import LogEvent, LogOutcome, log_event
+from app.uow.factory import UnitOfWorkFactory
 {% if auth %}from app.uow.unit import UnitOfWork
 {% endif %}
+logger = logging.getLogger(__name__)
+
 
 class ItemNotFoundError(LookupError):
     pass
@@ -49,10 +53,22 @@ class ItemService:
                 raise ValueError("workspace_id is required with auth")
             await self._require_membership(unit_of_work, user_id, workspace_id)
 {% endif %}            created = await unit_of_work.items.add(item)
-{% if evented %}            await unit_of_work.outbox.append(
-                EventEnvelope.new("item.created", created.model_dump(by_alias=True, mode="json"))
+{% if evented %}            envelope = EventEnvelope.new(
+                "item.created", created.model_dump(by_alias=True, mode="json")
             )
-{% endif %}            return created
+            await unit_of_work.outbox.append(envelope)
+{% endif %}        log_event(
+            logger,
+            logging.INFO,
+            "item creation committed",
+            event=LogEvent.ITEM_CREATE_COMPLETED,
+            outcome=LogOutcome.SUCCESS,
+            item_id=created.item_id,
+            workspace_id=created.workspace_id,
+{% if evented %}            event_id=envelope.event_id,
+{% endif %}
+        )
+        return created
 
     async def get(
         self,

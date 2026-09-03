@@ -16,6 +16,9 @@ detect rebuilt installations without changing the public version.
   protection for managed files, metadata, and conflict diagnostics.
 - Parallel root quality tests, focused Python compatibility gates, an independent OpenAPI gate, and
   isolated wheel smoke tests for default and custom generated commands.
+- Generated backend logging with rotated domain/instance file isolation, separate business,
+  debug, error, and parameter-free SQL channels, bounded correlation context, recursive redaction,
+  plus dedicated observability rules, skill, documentation, tests, and static harness enforcement.
 
 ### Changed
 
@@ -23,6 +26,8 @@ detect rebuilt installations without changing the public version.
   on the next `update`, `add`, `enable`, or `configure`; no compatibility alias is emitted and
   user-owned scripts remain untouched.
 - No-op controlled updates now return `up_to_date` without rewriting state or baseline files.
+- API, Service, worker, lifecycle, and repository-connection instrumentation now shares one stable
+  event/outcome model; Services emit success only after commit and worker success follows ACK.
 
 ## [0.2.0] - 2026-08-27
 

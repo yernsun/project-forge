@@ -55,6 +55,7 @@ jobs:
           tests/test_cli.py::test_same_version_update_migrates_legacy_state_schema_and_missing_digest
           tests/test_updates.py::test_junction_detection_supports_modern_and_python_311_paths
           tests/test_updates.py::test_real_windows_junction_is_rejected
+          tests/test_render_matrix.py::test_real_windows_log_junction_is_rejected
           tests/test_updates.py::test_update_reports_invalid_baseline_as_runtime_error
           tests/test_config.py
 
@@ -284,6 +285,13 @@ jobs:
         env:
           E2E_BASE_URL: http://localhost:5173
         run: npm run e2e
+      - name: Verify isolated runtime log files
+        working-directory: generated
+        run: |
+          docker compose -f docker-compose.dev.yml exec -T api \
+            sh -eu -c 'test -s "/app/logs/api/$(hostname)/business.log"'
+          docker compose -f docker-compose.dev.yml exec -T api \
+            sh -eu -c 'test -n "$(find /app/logs/cli -type f -name sql.log -print -quit)"'
       - name: Show Compose logs
         if: always()
         working-directory: generated
@@ -333,6 +341,15 @@ jobs:
           done
           docker compose --env-file .env.ci ps
           exit 1
+      - name: Verify production log domain and instance isolation
+        working-directory: generated-production
+        run: |
+          docker compose --env-file .env.ci exec -T api \
+            sh -eu -c 'test -s "/app/logs/api/$(hostname)/business.log"'
+          docker compose --env-file .env.ci exec -T event-relay \
+            sh -eu -c 'test -f "/app/logs/event-relay/$(hostname)/business.log"'
+          docker compose --env-file .env.ci exec -T event-relay \
+            sh -eu -c 'test -f "/app/logs/event-relay/$(hostname)/sql.log"'
       - name: Show production Compose logs
         if: always()
         working-directory: generated-production

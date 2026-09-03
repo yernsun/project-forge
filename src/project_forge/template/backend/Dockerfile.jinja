@@ -9,6 +9,7 @@ RUN uv sync --frozen --no-dev{% if auth %} --extra auth{% endif %}{% if evented 
 
 FROM python:3.13-slim-bookworm AS runtime
 RUN groupadd --system app && useradd --system --gid app --home /app app
+RUN install -d -o app -g app /app/logs
 WORKDIR /app
 COPY --from=builder --chown=app:app /app/.venv /app/.venv
 COPY --from=builder --chown=app:app /app/src /app/src

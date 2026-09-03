@@ -120,6 +120,12 @@ jobs:
         env:
           E2E_BASE_URL: http://localhost:5173
         run: npm run e2e
+      - name: Verify isolated runtime log files
+        run: |
+          docker compose -f docker-compose.dev.yml exec -T api \
+            sh -eu -c 'test -s "/app/logs/api/$(hostname)/business.log"'
+          docker compose -f docker-compose.dev.yml exec -T api \
+            sh -eu -c 'test -n "$(find /app/logs/cli -type f -name sql.log -print -quit)"'
       - name: Show Compose logs
         if: always()
         run: docker compose -f docker-compose.dev.yml logs --no-color --tail=200
@@ -157,6 +163,15 @@ jobs:
           done
           docker compose --env-file .env.ci ps
           exit 1
+      - name: Verify production log domain and instance isolation
+        run: |
+          docker compose --env-file .env.ci exec -T api \
+            sh -eu -c 'test -s "/app/logs/api/$(hostname)/business.log"'
+{% if evented %}          docker compose --env-file .env.ci exec -T event-relay \
+            sh -eu -c 'test -f "/app/logs/event-relay/$(hostname)/business.log"'
+          docker compose --env-file .env.ci exec -T event-relay \
+            sh -eu -c 'test -f "/app/logs/event-relay/$(hostname)/sql.log"'
+{% endif %}
       - name: Show production Compose logs
         if: always()
         run: docker compose --env-file .env.ci logs --no-color --tail=200

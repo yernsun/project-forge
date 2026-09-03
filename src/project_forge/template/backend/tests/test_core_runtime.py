@@ -227,14 +227,23 @@ class FakeRepositoryConnection:
 
 
 @pytest.mark.asyncio
-async def test_repository_connection_batches_named_mappings_and_copy_rows() -> None:
+async def test_repository_connection_batches_named_mappings_and_copy_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     raw_connection = FakeRepositoryConnection()
     owner = asyncio.current_task()
     if owner is None:
         raise RuntimeError("test requires an asyncio task")
-    connection = PsycopgRepositoryConnection(
-        cast(DbConnection, raw_connection), owner
+    observations: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "app.db.repository_connection.record_sql_query",
+        lambda **fields: observations.append(fields),
     )
+    connection = PsycopgRepositoryConnection(
+        cast(DbConnection, raw_connection),
+        owner,
+        transaction_id="transaction-test",
+    ).for_repository("examples")
     query = sql.SQL(
         "INSERT INTO examples (example_id) VALUES (%(example_id)s)"
     )
@@ -283,6 +292,16 @@ async def test_repository_connection_batches_named_mappings_and_copy_rows() -> N
             yield ()
 
     assert await connection.copy_rows(copy_query, empty_async_rows()) == 0
+
+    assert len(observations) == 7
+    assert {entry["transaction_id"] for entry in observations} == {"transaction-test"}
+    assert {entry["repository"] for entry in observations} == {"examples"}
+    assert {entry["operation"] for entry in observations} == {"insert", "copy"}
+    assert all("example_id" in str(entry["query"]) for entry in observations)
+    assert all("parameters" not in entry for entry in observations)
+    failures = [entry for entry in observations if entry["error"] is not None]
+    assert len(failures) == 1
+    assert isinstance(failures[0]["error"], TypeError)
 
     connection.finish()
     with pytest.raises(RuntimeError, match="no longer active"):

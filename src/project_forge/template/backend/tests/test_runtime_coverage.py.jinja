@@ -132,6 +132,15 @@ def test_migration_and_configuration_cli_commands_cover_operator_outputs(
             return {
                 "environment": "development",
                 "database_configured": True,
+                "logging": {
+                    "root": "logs",
+                    "instance_id": "cli-test",
+                    "level": "INFO",
+                    "max_bytes": 10_485_760,
+                    "backup_count": 5,
+                    "sql_enabled": True,
+                    "sql_slow_ms": 200.0,
+                },
 {% if evented %}                "redis_configured": True,
 {% endif %}{% if auth %}                "authentication": {
                     "allowed_origins": ["http://localhost:5173"],
@@ -143,6 +152,7 @@ def test_migration_and_configuration_cli_commands_cover_operator_outputs(
 
     monkeypatch.setattr(cli_module, "_runner", fake_runner)
     monkeypatch.setattr(cli_module, "Settings", _Settings)
+    monkeypatch.setattr(cli_module, "configure_logging", lambda *_args, **_kwargs: None)
     command = CliRunner()
 
     status_result = command.invoke(cli_module.app, ["migrate", "status"])
@@ -167,6 +177,10 @@ def test_migration_and_configuration_cli_commands_cover_operator_outputs(
     assert config_result.exit_code == 0
     assert "environment=development" in config_result.stdout
     assert "database_configured=true" in config_result.stdout
+    assert "log_root=logs" in config_result.stdout
+    assert "log_instance_id=cli-test" in config_result.stdout
+    assert "log_level=INFO" in config_result.stdout
+    assert "log_sql_enabled=true" in config_result.stdout
 {% if evented %}    assert "redis_configured=true" in config_result.stdout
 {% endif %}{% if auth %}    assert "allowed_origins=http://localhost:5173" in config_result.stdout
     assert "cookies_secure=false" in config_result.stdout

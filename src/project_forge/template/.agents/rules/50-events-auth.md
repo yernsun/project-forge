@@ -12,6 +12,8 @@
   codes rather than server message text.
 - Correlate HTTP diagnostics with `X-Request-ID`; structured logs and config summaries never include
   bodies, credentials, cookies, session/CSRF tokens, database URLs, or secrets.
+- Authentication logs use stable outcomes and actor IDs only after authentication succeeds; failed
+  attempts never contain email addresses or client credentials.
 - Workspace paths and membership checks are explicit; never infer tenant scope from payload data.
 - Outbox writes share the domain transaction.
 - Stream consumers acknowledge only after commit and must deduplicate by the envelope's stable

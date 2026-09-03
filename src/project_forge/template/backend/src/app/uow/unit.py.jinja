@@ -5,6 +5,7 @@ import sys
 from contextlib import AsyncExitStack
 from functools import cached_property
 from types import TracebackType
+from uuid import uuid4
 
 {% if auth %}from app.auth.repository import PostgresAuthRepository
 {% endif %}from app.db.registry import MIGRATIONS
@@ -45,7 +46,9 @@ class UnitOfWork:
         try:
             connection = await self._contexts.enter_async_context(self._pool.connection())
             await self._contexts.enter_async_context(connection.transaction())
-            self._repository_connection = PsycopgRepositoryConnection(connection, owner)
+            self._repository_connection = PsycopgRepositoryConnection(
+                connection, owner, transaction_id=uuid4().hex
+            )
             return self
         except BaseException:
             self._closed = True
@@ -58,19 +61,19 @@ class UnitOfWork:
         if asyncio.current_task() is not self._owner:
             raise RuntimeError("UnitOfWork cannot cross asyncio task boundaries")
 
-    def _require_connection(self) -> RepositoryConnection:
+    def _require_connection(self, repository: str = "unbound") -> RepositoryConnection:
         self.assert_owner()
         connection = self._repository_connection
         if connection is None:
             raise RuntimeError("UnitOfWork repository connection was not initialized")
-        return connection
+        return connection.for_repository(repository)
 
     @cached_property
     def health(self) -> PostgresHealthRepository:
         """Return migration-aware readiness persistence for this transaction."""
 
         return PostgresHealthRepository(
-            self._require_connection(),
+            self._require_connection("health"),
             expected_migrations=EXPECTED_MIGRATION_CHECKSUMS,
         )
 
@@ -78,25 +81,25 @@ class UnitOfWork:
     def items(self) -> PostgresItemRepository:
         """Return sample Item persistence for this transaction."""
 
-        return PostgresItemRepository(self._require_connection())
+        return PostgresItemRepository(self._require_connection("items"))
 
 {% endif %}{% if auth %}    @cached_property
     def auth(self) -> PostgresAuthRepository:
         """Return authentication persistence for this transaction."""
 
-        return PostgresAuthRepository(self._require_connection())
+        return PostgresAuthRepository(self._require_connection("auth"))
 
 {% endif %}{% if evented %}    @cached_property
     def outbox(self) -> PostgresOutboxRepository:
         """Return transactional outbox persistence for this transaction."""
 
-        return PostgresOutboxRepository(self._require_connection())
+        return PostgresOutboxRepository(self._require_connection("outbox"))
 
     @cached_property
     def processed_messages(self) -> PostgresProcessedMessageRepository:
         """Return event idempotency persistence for this transaction."""
 
-        return PostgresProcessedMessageRepository(self._require_connection())
+        return PostgresProcessedMessageRepository(self._require_connection("processed-messages"))
 
 {% endif %}    async def __aexit__(
         self,

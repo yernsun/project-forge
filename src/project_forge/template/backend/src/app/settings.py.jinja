@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import socket
 from enum import StrEnum
 from functools import lru_cache
 {% if auth %}from ipaddress import ip_address, ip_network
-from urllib.parse import urlsplit
+{% endif %}from pathlib import Path
+{% if auth %}from urllib.parse import urlsplit
 {% endif %}
 {% if auth %}from pydantic import Field, SecretStr, model_validator
 {% else %}from pydantic import Field, model_validator
 {% endif %}from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.observability.config import build_logging_config
 
 DEVELOPMENT_DATABASE_URL = "postgresql://app:app@localhost:5432/app"
 {% if auth %}DEVELOPMENT_RATE_LIMIT_SECRET = "development-only-auth-rate-limit-secret"
@@ -33,6 +37,28 @@ class Settings(BaseSettings):
     )
     database_url: str = Field(
         default=DEVELOPMENT_DATABASE_URL, validation_alias="DATABASE_URL"
+    )
+    log_root: Path = Field(default=Path("logs"), validation_alias="APP_LOG_ROOT")
+    log_instance_id: str = Field(
+        default_factory=socket.gethostname, validation_alias="APP_LOG_INSTANCE_ID"
+    )
+    log_level: str = Field(default="INFO", validation_alias="APP_LOG_LEVEL")
+    log_max_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        ge=1,
+        validation_alias="APP_LOG_MAX_BYTES",
+    )
+    log_backup_count: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        validation_alias="APP_LOG_BACKUP_COUNT",
+    )
+    log_sql_enabled: bool = Field(default=True, validation_alias="APP_LOG_SQL_ENABLED")
+    log_sql_slow_ms: float = Field(
+        default=200.0,
+        ge=0,
+        validation_alias="APP_LOG_SQL_SLOW_MS",
     )
 {% if evented %}    redis_url: str = Field(
         default="redis://localhost:6379/0", validation_alias="REDIS_URL"
@@ -91,6 +117,17 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def require_safe_production_settings(self) -> Settings:
+        build_logging_config(
+            domain="api",
+            instance=self.log_instance_id,
+            root=self.log_root,
+            environment=self.app_env.value,
+            level=self.log_level,
+            max_bytes=self.log_max_bytes,
+            backup_count=self.log_backup_count,
+            sql_enabled=self.log_sql_enabled,
+            sql_slow_ms=self.log_sql_slow_ms,
+        )
         if self.app_env is not AppEnvironment.PRODUCTION:
             return self
         if self.database_url == DEVELOPMENT_DATABASE_URL:
@@ -185,6 +222,7 @@ class Settings(BaseSettings):
         summary: dict[str, object] = {
             "environment": self.app_env.value,
             "database_configured": bool(self.database_url),
+            "logging": self.logging_summary(),
 {% if evented %}            "redis_configured": bool(self.redis_url),
             "event_relay": {
                 "poll_seconds": self.event_relay_poll_seconds,
@@ -205,6 +243,17 @@ class Settings(BaseSettings):
         }
         return summary
 
+    def logging_summary(self) -> dict[str, object]:
+        return {
+            "root": str(self.log_root),
+            "instance_id": self.log_instance_id,
+            "level": self.log_level.upper(),
+            "max_bytes": self.log_max_bytes,
+            "backup_count": self.log_backup_count,
+            "sql_enabled": self.log_sql_enabled,
+            "sql_slow_ms": self.log_sql_slow_ms,
+        }
+
     @property
     def session_cookie_name(self) -> str:
         prefix = f"{COOKIE_PREFIX}-session"
@@ -221,12 +270,24 @@ class Settings(BaseSettings):
         return {
             "environment": self.app_env.value,
             "database_configured": bool(self.database_url),
+            "logging": self.logging_summary(),
 {% if evented %}            "redis_configured": bool(self.redis_url),
             "event_relay": {
                 "poll_seconds": self.event_relay_poll_seconds,
                 "max_attempts": self.event_relay_max_attempts,
             },
 {% endif %}        }
+
+    def logging_summary(self) -> dict[str, object]:
+        return {
+            "root": str(self.log_root),
+            "instance_id": self.log_instance_id,
+            "level": self.log_level.upper(),
+            "max_bytes": self.log_max_bytes,
+            "backup_count": self.log_backup_count,
+            "sql_enabled": self.log_sql_enabled,
+            "sql_slow_ms": self.log_sql_slow_ms,
+        }
 {% endif %}
 
 

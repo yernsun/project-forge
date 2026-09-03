@@ -225,8 +225,10 @@ def test_root_and_packaged_faqs_are_bilingual_and_synchronized() -> None:
 
     for root_path, template_path in pairs:
         root_content = root_path.read_text(encoding="utf-8")
-        template_content = template_path.read_text(encoding="utf-8").replace(
-            "{{ command_name }}", "content-agent"
+        template_content = (
+            template_path.read_text(encoding="utf-8")
+            .replace("{{ command_name }}", "content-agent")
+            .replace("{{ project_slug }}", "PROJECT")
         )
         assert root_content == template_content
         assert root_content.count("```") % 2 == 0

@@ -46,6 +46,16 @@ validation logs without bodies, credentials, cookies, or secrets. `<command-name
 only a redacted effective-settings summary. Event relays reclaim stale pending deliveries, bound
 attempts, park failed outbox rows, and require explicit operator replay after remediation.
 
+Every generated process configures one logging domain and writes rotated JSON Lines beneath
+`logs/<domain>/<instance>/`. Business, debug, error, and SQL channels are routed independently;
+slow and failed SQL also reaches the error channel, while SQL never reaches the console. Context
+variables carry request, operation, actor, workspace, event, and message identifiers across layers.
+The repository connection records only rendered statements with named placeholders, duration,
+row count, transaction ID, and repository label—never parameter values. Formatters bound every
+field and line, recursively redact sensitive names, and omit raw exception values. The generated
+logging harness enforces static messages/events, explicit safe fields, and the domain/Service/
+Repository ownership boundary.
+
 The generated frontend keeps server state in Vue Query, client-owned locale, Aura color-scheme
 preference, and per-user workspace selection in Pinia, DTO types in one of four real FastAPI OpenAPI
 contracts, and locale state in one

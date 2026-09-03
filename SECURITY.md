@@ -10,6 +10,11 @@ Controlled updates reject symbolic links and Windows junctions across managed fi
 bound baseline archive resources before extraction, and write conflict diagnostics only beneath a
 verified real project root.
 
+Generated backends isolate rotated logs by process domain and instance, reject symlink/junction log
+paths, recursively redact sensitive field names, omit raw exception values and SQL parameters, and
+cap strings, collections, nesting, stack frames, and complete JSONL records. Logs are diagnostic;
+security-relevant facts that require durable audit semantics must remain transactional data.
+
 ## Reporting
 
 Do not open public issues for suspected vulnerabilities or include credentials, cookies, database

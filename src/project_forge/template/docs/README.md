@@ -11,6 +11,7 @@ Use this page to route an engineering change to the rule set that owns it. Start
 | Vue state, API client, or translations | [Frontend and i18n](architecture/frontend-i18n.md) | Vue Query owns server state; both locales remain complete |
 | Login, sessions, cookies, CSRF, or tenancy | [Authentication](architecture/auth.md) | PostgreSQL opaque sessions and workspace isolation |
 | Outbox, Redis Streams, retries, or DLQ | [Events](architecture/events.md) | At-least-once delivery with stable event-ID deduplication |
+| Logs, correlation, SQL timing, or process isolation | [Structured logging](architecture/logging.md) | One rotated file set per domain/instance; no secret or SQL parameter values |
 | Compose, LAN, Origin, cookies, or runtime diagnosis | [FAQ](../FAQ.md) | Compare browser-visible values with resolved container configuration |
 
 Run the governed checks from the repository root after a change:
@@ -29,6 +30,7 @@ The static architecture, SQL, and i18n harnesses can also be run independently w
 
 ```bash
 python harness/check_architecture.py
+python harness/check_logging.py
 python harness/check_sql.py
 python harness/check_i18n.py
 ```

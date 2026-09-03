@@ -16,6 +16,9 @@ Follow `.agents/rules/` before editing. Rules override documentation.
 - Frontend server state belongs in Vue Query; Pinia is only for client-owned state.
 - External JSON uses camelCase; internal Python and TypeScript implementation names follow their
   language conventions.
+- Logs are isolated by process domain and instance. Services log committed business outcomes,
+  workers correlate message handling through commit and ACK, repositories rely on parameter-free
+  connection-level SQL observations, and domain modules never log.
 
 ## SQL
 

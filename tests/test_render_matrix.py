@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import py_compile
 import re
 import subprocess
@@ -72,7 +73,7 @@ STATES = tuple(valid_states())
 def test_every_valid_combination_renders(state: ProjectState, tmp_path: Path) -> None:
     destination = tmp_path / "project"
     render_fresh(state, destination)
-    for script in ("check_architecture.py", "check_sql.py"):
+    for script in ("check_architecture.py", "check_logging.py", "check_sql.py"):
         subprocess.run(
             [sys.executable, f"harness/{script}"],
             cwd=destination,
@@ -111,6 +112,8 @@ def test_every_valid_combination_renders(state: ProjectState, tmp_path: Path) ->
         state.has_backend and state.evented
     )
     assert (destination / "backend/src/app/api/observability.py").exists() is state.has_backend
+    assert (destination / "backend/src/app/observability").exists() is state.has_backend
+    assert (destination / "backend/tests/test_observability.py").exists() is state.has_backend
     assert (destination / "backend/tests/test_core_runtime.py").exists() is state.has_backend
     assert (destination / "backend/src/app/repositories/base.py").exists() is state.has_backend
     assert (
@@ -127,6 +130,9 @@ def test_every_valid_combination_renders(state: ProjectState, tmp_path: Path) ->
         state.has_frontend and state.sample
     )
     assert not (destination / ".project-forge").exists()
+    assert (destination / ".agents/rules/15-observability.md").is_file()
+    assert (destination / ".agents/skills/instrument-observability/SKILL.md").is_file()
+    assert (destination / "docs/architecture/logging.md").is_file()
     for cache in ("node_modules", "dist", "coverage"):
         assert not (destination / "frontend" / cache).exists()
 
@@ -161,6 +167,22 @@ def test_every_valid_combination_renders(state: ProjectState, tmp_path: Path) ->
             state.command_name: "app.cli:main"
         }
         assert backend_project["tool"]["fastapi"]["entrypoint"] == "app.main:app"
+        for compose_file in ("docker-compose.dev.yml", "docker-compose.yml"):
+            compose = yaml.safe_load((destination / compose_file).read_text(encoding="utf-8"))
+            assert "runtime-logs" in compose["volumes"]
+            for service_name in ("migrate", "api"):
+                service = compose["services"][service_name]
+                assert "runtime-logs:/app/logs" in service["volumes"]
+                assert service["environment"]["APP_LOG_ROOT"] == "/app/logs"
+            assert ("event-relay" in compose["services"]) is state.evented
+            if state.evented:
+                assert "runtime-logs:/app/logs" in compose["services"]["event-relay"][
+                    "volumes"
+                ]
+    else:
+        for compose_file in ("docker-compose.dev.yml", "docker-compose.yml"):
+            compose = yaml.safe_load((destination / compose_file).read_text(encoding="utf-8"))
+            assert "runtime-logs" not in compose.get("volumes", {})
     workflow = yaml.safe_load(
         (destination / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     )
@@ -273,6 +295,7 @@ def test_generated_readmes_are_runnable_and_profile_specific(
         assert (f"{state.command_name} auth purge-expired" in content) is auth
         assert ("python -m app.events.worker" in content) is evented
         assert (f"{state.command_name} config check --json" in content) is state.has_backend
+        assert ("logs/<domain>/<instance>" in content) is state.has_backend
         assert (f"{state.command_name} events status --json" in content) is evented
         assert ("npm run test:coverage" in content) is state.has_frontend
         assert "172.20.0.10" in content
@@ -300,12 +323,73 @@ def test_generated_readmes_are_runnable_and_profile_specific(
             "HARNESS_STRICT",
             "172.20.0.10",
             "X-Request-ID",
+            "APP_LOG_INSTANCE_ID",
+            "runtime-logs",
             f"{state.command_name} config check --json",
         ):
             assert marker in content
         assert "192.168." not in content
         assert "{%" not in content
         assert "{{" not in content
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="real Windows junction contract")
+def test_real_windows_log_junction_is_rejected(tmp_path: Path) -> None:
+    destination = tmp_path / "project"
+    render_fresh(
+        ProjectState.create("Logging Junction", profile=Profile.BACKEND, sample=False),
+        destination,
+    )
+    target = tmp_path / "log-target"
+    target.mkdir()
+    junction = tmp_path / "log-junction"
+    created = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(target)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if created.returncode != 0:
+        pytest.skip("junction creation is unavailable")
+
+    source = destination / "backend/src"
+    script = """
+import sys
+from pathlib import Path
+from app.observability.config import build_logging_config, prepare_log_directory
+
+config = build_logging_config(
+    domain="api",
+    instance="windows-smoke",
+    root=Path(sys.argv[1]),
+    environment="test",
+    level="INFO",
+    max_bytes=1024,
+    backup_count=1,
+    sql_enabled=True,
+    sql_slow_ms=200,
+)
+try:
+    prepare_log_directory(config)
+except ValueError as error:
+    if "symlinks or junctions" in str(error):
+        raise SystemExit(0)
+raise SystemExit(1)
+"""
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(source)
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", script, str(junction)],
+            cwd=destination,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+    finally:
+        os.rmdir(junction)
 
 
 def test_explicit_custom_command_reaches_all_console_surfaces(tmp_path: Path) -> None:

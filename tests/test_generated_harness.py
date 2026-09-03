@@ -71,7 +71,12 @@ def test_static_generated_harnesses_pass(state: ProjectState, tmp_path: Path) ->
     assert '"--env-file"' in harness_source
     assert "harness-only-rate-limit-secret-at-least-32-bytes" in harness_source
     assert f'"{state.command_name}", "--help"' in harness_source
-    for script in ("check_architecture.py", "check_sql.py", "check_i18n.py"):
+    for script in (
+        "check_architecture.py",
+        "check_logging.py",
+        "check_sql.py",
+        "check_i18n.py",
+    ):
         subprocess.run(
             [sys.executable, f"harness/{script}"],
             cwd=destination,
@@ -82,7 +87,7 @@ def test_static_generated_harnesses_pass(state: ProjectState, tmp_path: Path) ->
 
     if state.has_backend:
         subprocess.run(
-            ["ruff", "check", "tests/test_runtime_coverage.py"],
+            [sys.executable, "-m", "ruff", "check", "tests/test_runtime_coverage.py"],
             cwd=destination / "backend",
             check=True,
             capture_output=True,
@@ -160,6 +165,8 @@ def test_static_generated_harnesses_pass(state: ProjectState, tmp_path: Path) ->
         assert "http://localhost:5173/health/ready" in commands
         assert "npm run e2e:install" in commands
         assert "npm run e2e" in commands
+        assert "/app/logs/api/$(hostname)/business.log" in commands
+        assert "/app/logs/cli" in commands
         assert "docker compose -f docker-compose.dev.yml logs" in commands
         assert "docker compose -f docker-compose.dev.yml down --volumes" in commands
         step_names = [step.get("name") for step in e2e["steps"]]
@@ -178,6 +185,7 @@ def test_static_generated_harnesses_pass(state: ProjectState, tmp_path: Path) ->
         assert "APP_ALLOWED_ORIGINS=https://172.20.0.10:8443" in production_commands
         assert "docker compose --env-file .env.ci up -d --build" in production_commands
         assert "http://127.0.0.1:8080/health/ready" in production_commands
+        assert "/app/logs/api/$(hostname)/business.log" in production_commands
 
 
 def test_top_level_harness_reports_python_311_syntax_cleanly(tmp_path: Path) -> None:
@@ -268,6 +276,7 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
     assert "--profile fullstack --auth --sample --no-git" in e2e_steps
     assert "docker compose -f docker-compose.dev.yml up -d --build" in e2e_steps
     assert "npm run e2e" in e2e_steps
+    assert "/app/logs/api/$(hostname)/business.log" in e2e_steps
     e2e_step_names = [step.get("name") for step in e2e["steps"]]
     assert e2e_step_names.index("Install browser test dependencies") < e2e_step_names.index(
         "Start development Compose stack"
@@ -299,6 +308,7 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
     platform_commands = "\n".join(str(step.get("run", "")) for step in platform["steps"])
     assert "--no-cov" in platform_commands
     assert "test_real_windows_junction_is_rejected" in platform_commands
+    assert "test_real_windows_log_junction_is_rejected" in platform_commands
 
     security = workflow["jobs"]["security-audit"]
     security_commands = "\n".join(str(step.get("run", "")) for step in security["steps"])
@@ -311,6 +321,8 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
     )
     assert "APP_ALLOWED_ORIGINS=https://172.20.0.10:8443" in production_commands
     assert "http://127.0.0.1:8080/health/ready" in production_commands
+    assert "/app/logs/api/$(hostname)/business.log" in production_commands
+    assert "/app/logs/event-relay/$(hostname)/business.log" in production_commands
 
     release = yaml.safe_load(
         (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
@@ -390,6 +402,16 @@ def test_architecture_harness_rejects_boundary_bypasses(tmp_path: Path) -> None:
             service_type = HealthService
             """,
             "domain cannot import app.services.health",
+        ),
+        (
+            "domain-observability",
+            "domain/forbidden_observability.py",
+            """
+            from app.observability import log_event
+
+            emit = log_event
+            """,
+            "domain cannot import app.observability",
         ),
         (
             "relative-api-repository",
@@ -483,6 +505,18 @@ def test_architecture_harness_rejects_boundary_bypasses(tmp_path: Path) -> None:
             "repository cannot acquire or operate a raw connection with cursor()",
         ),
         (
+            "repository-business-log",
+            "repositories/forbidden_logging.py",
+            """
+            import logging
+            from typing import Protocol
+
+            class ForbiddenRepository(Protocol):
+                logger = logging.getLogger(__name__)
+            """,
+            "repository cannot emit business logs",
+        ),
+        (
             "repository-missing-base",
             "repositories/forbidden_base.py",
             """
@@ -538,7 +572,7 @@ def test_architecture_harness_rejects_boundary_bypasses(tmp_path: Path) -> None:
             def forbidden_injection(self) -> PostgresItemRepository:
                 return PostgresItemRepository(object())
             """,
-            "must inject self._require_connection()",
+            "must inject self._require_connection(<static label>)",
         ),
     )
     for source, expected in uow_cases:
@@ -555,6 +589,100 @@ def test_architecture_harness_rejects_boundary_bypasses(tmp_path: Path) -> None:
         assert result.returncode == 1
         assert expected in result.stderr
     unit_of_work.write_text(original_unit_of_work, encoding="utf-8")
+
+
+def test_logging_harness_rejects_dynamic_or_sensitive_instrumentation(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "project"
+    render_fresh(
+        ProjectState.create("Logging Guard", profile=Profile.BACKEND, sample=False),
+        destination,
+    )
+    service = destination / "backend/src/app/services/logging_guard.py"
+    accepted_source = dedent(
+        """
+        import logging
+
+        from app.observability import LogEvent, LogOutcome, log_event
+
+        logger = logging.getLogger(__name__)
+
+        def run(entity_id: str) -> None:
+            log_event(
+                logger,
+                logging.INFO,
+                "operation committed",
+                event=LogEvent.SYSTEM_SERVICE_READY,
+                outcome=LogOutcome.SUCCESS,
+                entity_id=entity_id,
+            )
+        """
+    )
+    service.write_text(accepted_source, encoding="utf-8")
+    accepted = subprocess.run(
+        [sys.executable, "harness/check_logging.py"],
+        cwd=destination,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert accepted.returncode == 0, accepted.stderr
+
+    cases = (
+        (
+            "direct logger calls",
+            "logger.info(\"operation committed\")",
+            "use log_event/log_exception",
+        ),
+        (
+            "dynamic messages",
+            'log_event(logger, logging.INFO, f"committed {entity_id}", '
+            'event="service.operation.completed", outcome=LogOutcome.SUCCESS)',
+            "log message must be a static string",
+        ),
+        (
+            "dynamic events",
+            'log_event(logger, logging.INFO, "committed", event=entity_id, '
+            "outcome=LogOutcome.SUCCESS)",
+            "event must be a LogEvent member or static dotted name",
+        ),
+        (
+            "dynamic outcomes",
+            'log_event(logger, logging.INFO, "committed", '
+            'event="service.operation.completed", outcome=entity_id)',
+            "outcome must be a LogOutcome member or supported literal",
+        ),
+        (
+            "sensitive fields",
+            'log_event(logger, logging.INFO, "committed", '
+            'event="service.operation.completed", outcome=LogOutcome.SUCCESS, '
+            "request_body=entity_id)",
+            "sensitive structured log field is forbidden",
+        ),
+        (
+            "implicit fields",
+            'log_event(logger, logging.INFO, "committed", '
+            'event="service.operation.completed", outcome=LogOutcome.SUCCESS, '
+            "**{'entity_id': entity_id})",
+            "structured log fields must be explicit keywords",
+        ),
+    )
+    prefix = accepted_source.rsplit("def run", maxsplit=1)[0]
+    for name, expression, expected in cases:
+        service.write_text(
+            prefix + "def run(entity_id: str) -> None:\n    " + expression + "\n",
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [sys.executable, "harness/check_logging.py"],
+            cwd=destination,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 1, f"{name} unexpectedly passed"
+        assert expected in result.stderr, f"{name}: {result.stderr}"
 
 
 def test_sql_harness_rejects_dynamic_composition_bypasses(tmp_path: Path) -> None:

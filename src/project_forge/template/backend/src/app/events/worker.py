@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
-import socket
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from typing import cast
@@ -11,17 +11,24 @@ from typing import cast
 import typer
 from redis.asyncio import Redis
 
-from app.api.observability import configure_logging
 from app.db.pool import create_pool
 from app.events.models import EventEnvelope
 from app.events.service import OutboxService
 from app.events.transport import RedisEventTransport
+from app.observability import (
+    LogEvent,
+    LogOutcome,
+    configure_logging,
+    log_event,
+    log_exception,
+    operation_context,
+)
 from app.settings import get_settings
 from app.uow.factory import UnitOfWorkFactory
 from app.uow.unit import UnitOfWork
 
 app = typer.Typer(no_args_is_help=True)
-logger = logging.getLogger("app.events")
+logger = logging.getLogger(__name__)
 
 
 async def relay_forever(stop_event: asyncio.Event | None = None) -> None:
@@ -32,28 +39,44 @@ async def relay_forever(stop_event: asyncio.Event | None = None) -> None:
     redis = Redis.from_url(settings.redis_url)
     service = OutboxService(UnitOfWorkFactory(pool))
     transport = RedisEventTransport(redis)
-    worker_id = socket.gethostname()
+    worker_id = f"{settings.log_instance_id}:{os.getpid()}"
     try:
         while not stop.is_set():
             records = await service.claim(worker_id)
             for record in records:
-                try:
-                    await transport.publish(record.envelope)
-                except Exception as error:
-                    parked = await service.release(
-                        record.envelope.event_id,
-                        record.attempts,
-                        error_code=type(error).__name__,
-                        max_attempts=settings.event_relay_max_attempts,
-                    )
-                    logger.exception(
-                        "outbox publish failed",
-                        extra={
-                            "event": "outbox_parked" if parked else "outbox_retry_scheduled"
-                        },
-                    )
-                else:
-                    await service.mark_published(record.envelope.event_id)
+                event_id = str(record.envelope.event_id)
+                with operation_context(operation_id=event_id, event_id=event_id):
+                    try:
+                        await transport.publish(record.envelope)
+                    except Exception as error:
+                        parked = await service.release(
+                            record.envelope.event_id,
+                            record.attempts,
+                            error_code=type(error).__name__,
+                            max_attempts=settings.event_relay_max_attempts,
+                        )
+                        log_exception(
+                            logger,
+                            "outbox publish failed",
+                            event=(
+                                LogEvent.STREAM_OUTBOX_PARKED
+                                if parked
+                                else LogEvent.STREAM_OUTBOX_RETRY_SCHEDULED
+                            ),
+                            outcome=(LogOutcome.FAILED if parked else LogOutcome.RETRY),
+                            error=error,
+                            attempts=record.attempts,
+                        )
+                    else:
+                        await service.mark_published(record.envelope.event_id)
+                        log_event(
+                            logger,
+                            logging.INFO,
+                            "outbox event published",
+                            event=LogEvent.STREAM_OUTBOX_PUBLISHED,
+                            outcome=LogOutcome.SUCCESS,
+                            attempts=record.attempts,
+                        )
             with suppress(TimeoutError):
                 await asyncio.wait_for(
                     stop.wait(), timeout=settings.event_relay_poll_seconds
@@ -94,45 +117,105 @@ class StreamConsumer:
 
     async def process(self, message_id: str, fields: dict[bytes, bytes]) -> None:
         payload = fields.get(b"payload")
-        try:
-            if payload is None:
-                raise ValueError("stream message does not contain a payload")
-            envelope = EventEnvelope.model_validate_json(payload)
-            async with self._unit_of_work_factory() as unit_of_work:
-                first_delivery = await unit_of_work.processed_messages.mark_once(
-                    self._group, envelope.event_id
-                )
-                if first_delivery:
-                    await self._handler(unit_of_work, envelope)
-        except Exception as error:
-            attempts = await cast(
-                Awaitable[int],
-                self._redis.hincrby(f"retry:{self._stream}:{self._group}", message_id, 1),
-            )
-            if attempts >= self._max_attempts:
-                await self._redis.xadd(
-                    f"{self._stream}.dlq",
-                    {
-                        "messageId": message_id,
-                        "payload": payload or b"",
-                        "attempts": attempts,
-                        "errorCode": type(error).__name__,
-                    },
-                )
+        envelope: EventEnvelope | None = None
+        event_id: str | None = None
+        first_delivery = False
+        with operation_context(message_id=message_id):
+            try:
+                if payload is None:
+                    raise ValueError("stream message does not contain a payload")
+                envelope = EventEnvelope.model_validate_json(payload)
+                event_id = str(envelope.event_id)
+                with operation_context(operation_id=event_id, event_id=event_id):
+                    async with self._unit_of_work_factory() as unit_of_work:
+                        first_delivery = await unit_of_work.processed_messages.mark_once(
+                            self._group, envelope.event_id
+                        )
+                        if first_delivery:
+                            await self._handler(unit_of_work, envelope)
+            except Exception as error:
+                with operation_context(operation_id=event_id, event_id=event_id):
+                    attempts = await cast(
+                        Awaitable[int],
+                        self._redis.hincrby(
+                            f"retry:{self._stream}:{self._group}", message_id, 1
+                        ),
+                    )
+                    if attempts >= self._max_attempts:
+                        await self._redis.xadd(
+                            f"{self._stream}.dlq",
+                            {
+                                "messageId": message_id,
+                                "payload": payload or b"",
+                                "attempts": attempts,
+                                "errorCode": type(error).__name__,
+                            },
+                        )
+                        await self._redis.xack(self._stream, self._group, message_id)
+                        await cast(
+                            Awaitable[int],
+                            self._redis.hdel(
+                                f"retry:{self._stream}:{self._group}", message_id
+                            ),
+                        )
+                        log_exception(
+                            logger,
+                            "stream message moved to DLQ",
+                            event=LogEvent.STREAM_MESSAGE_DLQ,
+                            outcome=LogOutcome.FAILED,
+                            error=error,
+                            stream=self._stream,
+                            group=self._group,
+                            attempts=attempts,
+                        )
+                        return
+                    log_exception(
+                        logger,
+                        "stream message remains pending",
+                        event=LogEvent.STREAM_MESSAGE_RETRY_PENDING,
+                        outcome=LogOutcome.RETRY,
+                        error=error,
+                        stream=self._stream,
+                        group=self._group,
+                        attempts=attempts,
+                    )
+                raise
+            try:
                 await self._redis.xack(self._stream, self._group, message_id)
                 await cast(
                     Awaitable[int],
-                    self._redis.hdel(f"retry:{self._stream}:{self._group}", message_id),
+                    self._redis.hdel(
+                        f"retry:{self._stream}:{self._group}", message_id
+                    ),
                 )
-                logger.exception("stream message moved to DLQ", extra={"event": "stream_dlq"})
-                return
-            raise
-        else:
-            await self._redis.xack(self._stream, self._group, message_id)
-            await cast(
-                Awaitable[int],
-                self._redis.hdel(f"retry:{self._stream}:{self._group}", message_id),
-            )
+            except Exception as error:
+                log_exception(
+                    logger,
+                    "stream acknowledgement failed",
+                    event=LogEvent.STREAM_MESSAGE_RETRY_PENDING,
+                    outcome=LogOutcome.RETRY,
+                    error=error,
+                    stream=self._stream,
+                    group=self._group,
+                )
+                raise
+            if envelope is not None:
+                with operation_context(operation_id=event_id, event_id=event_id):
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "stream message handled",
+                        event=(
+                            LogEvent.STREAM_MESSAGE_PROCESSED
+                            if first_delivery
+                            else LogEvent.STREAM_MESSAGE_DEDUPLICATED
+                        ),
+                        outcome=(
+                            LogOutcome.SUCCESS if first_delivery else LogOutcome.SKIPPED
+                        ),
+                        stream=self._stream,
+                        group=self._group,
+                    )
 
     async def reclaim_stale(self, *, min_idle_ms: int = 300_000, count: int = 100) -> int:
         """Claim abandoned pending messages and process them under this consumer."""
@@ -151,13 +234,8 @@ class StreamConsumer:
             message_id = (
                 raw_message_id.decode() if isinstance(raw_message_id, bytes) else raw_message_id
             )
-            try:
+            with suppress(Exception):
                 await self.process(message_id, fields)
-            except Exception:
-                logger.exception(
-                    "reclaimed stream message remains pending",
-                    extra={"event": "stream_retry_pending"},
-                )
             processed += 1
         return processed
 
@@ -177,13 +255,8 @@ class StreamConsumer:
                     if isinstance(raw_message_id, bytes)
                     else raw_message_id
                 )
-                try:
+                with suppress(Exception):
                     await self.process(message_id, fields)
-                except Exception:
-                    logger.exception(
-                        "stream message remains pending",
-                        extra={"event": "stream_retry_pending"},
-                    )
                 processed += 1
         return processed
 
@@ -230,7 +303,7 @@ def relay() -> None:
                 loop.add_signal_handler(signum, stop.set)
         await relay_forever(stop)
 
-    configure_logging()
+    configure_logging(get_settings(), domain="event-relay")
     asyncio.run(run())
 
 

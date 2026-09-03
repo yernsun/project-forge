@@ -284,6 +284,44 @@ uv run content-agent auth purge-expired
 
 Do not raise production limits merely to hide a broken proxy/client-address configuration.
 
+## Log files and isolation
+
+### Where are backend logs written?
+
+Each process writes to `logs/<domain>/<instance>/` when run from `backend/`. The four rotated
+channels are `business.log`, `debug.log`, `error.log`, and `sql.log`. Compose uses
+`APP_LOG_ROOT=/app/logs` and persists that directory in the `runtime-logs` named volume.
+
+```bash
+cd backend
+uv run content-agent config check --json
+find logs -type f -maxdepth 4 -print
+
+docker compose exec -T api find /app/logs -type f -maxdepth 4 -print
+docker volume inspect PROJECT_runtime-logs
+```
+
+The API, CLI, and event relay use different domains. The default instance is the hostname, which
+isolates normal Compose containers. Set a stable, unique `APP_LOG_INSTANCE_ID` for every concurrent
+same-domain process that shares a host directory.
+
+### Why are logs missing, mixed, or growing unexpectedly?
+
+- Recreate the process after changing `APP_LOG_*`; settings are loaded at startup.
+- Confirm the effective root, instance, level, rotation size/count, and SQL switch with
+  `content-agent config check --json`.
+- A duplicate domain/instance intentionally targets the same files. Assign unique instance IDs
+  instead of allowing multiple OS processes to rotate one file set.
+- Invalid names, non-writable directories, and symlink or Windows-junction path components fail
+  startup rather than silently redirecting logs.
+- `debug.log` is populated only at `APP_LOG_LEVEL=DEBUG`; `sql.log` requires
+  `APP_LOG_SQL_ENABLED=true`. SQL never appears on the console.
+
+Rotation is bounded per file by `APP_LOG_MAX_BYTES` and `APP_LOG_BACKUP_COUNT`, but the Compose
+volume survives `docker compose down`. Ship or back up JSONL externally when retention is required,
+and remove the named volume only through an intentional operational cleanup. Do not attach raw log
+files to public reports: redaction is defense in depth, not permission to disclose production data.
+
 ## Diagnosis and project maintenance
 
 ### What should I collect before reporting a Compose/authentication problem?
@@ -297,7 +335,8 @@ docker compose --env-file .env.dev -f docker-compose.dev.yml config --quiet
 docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T api content-agent config check --json
 docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T api printenv \
   APP_ENV APP_ALLOWED_ORIGINS APP_SESSION_COOKIE_SECURE \
-  APP_SIGNUP_ENABLED FORWARDED_ALLOW_IPS
+  APP_SIGNUP_ENABLED FORWARDED_ALLOW_IPS APP_LOG_ROOT APP_LOG_INSTANCE_ID \
+  APP_LOG_LEVEL APP_LOG_SQL_ENABLED
 docker compose --env-file .env.dev -f docker-compose.dev.yml logs --tail=100 api frontend
 curl -i http://localhost:5173/health/ready
 python harness/check.py
@@ -332,3 +371,4 @@ can distinguish generated changes from local ones. Never commit `.env`, cookie j
 | `csrf_invalid` / authenticated `403` | Session cookie, Origin, CSRF cookie/header pair |
 | `429` | `Retry-After`, trusted proxy chain, shared PostgreSQL limiter buckets |
 | Settings change ignored | Resolved Compose config and container recreation |
+| Logs missing or mixed | Effective log root/domain/instance, unique instance ID, permissions, process recreation |

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -8,32 +9,72 @@ from fastapi import FastAPI
 from app.api.errors import install_error_handlers
 from app.api.health import router as health_router
 {% if sample %}from app.api.items import router as items_router
-{% endif %}from app.api.observability import RequestContextMiddleware, configure_logging
+{% endif %}from app.api.observability import RequestContextMiddleware
 {% if auth %}from app.auth.api import router as auth_router
 {% endif %}from app.db.migration_engine import MigrationRunner
 from app.db.pool import create_pool
 from app.db.registry import MIGRATIONS
+from app.observability import LogEvent, LogOutcome, configure_logging, log_event, log_exception
 from app.settings import get_settings
 from app.uow.factory import UnitOfWorkFactory
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     pool = create_pool(settings.database_url)
-    await pool.open()
+    log_event(
+        logger,
+        logging.INFO,
+        "service starting",
+        event=LogEvent.SYSTEM_SERVICE_STARTED,
+        outcome=LogOutcome.SUCCESS,
+    )
     try:
+        await pool.open()
         async with pool.connection() as connection:
             await MigrationRunner(connection, MIGRATIONS).validate_current()
         app.state.database_pool = pool
         app.state.unit_of_work_factory = UnitOfWorkFactory(pool)
+        log_event(
+            logger,
+            logging.INFO,
+            "service ready",
+            event=LogEvent.SYSTEM_SERVICE_READY,
+            outcome=LogOutcome.SUCCESS,
+        )
         yield
+    except BaseException as error:
+        log_exception(
+            logger,
+            "service lifecycle failed",
+            event=LogEvent.SYSTEM_SERVICE_FAILED,
+            outcome=LogOutcome.FAILED,
+            error=error,
+        )
+        raise
     finally:
+        log_event(
+            logger,
+            logging.INFO,
+            "service stopping",
+            event=LogEvent.SYSTEM_SERVICE_STOPPING,
+            outcome=LogOutcome.SUCCESS,
+        )
         await pool.close()
+        log_event(
+            logger,
+            logging.INFO,
+            "service stopped",
+            event=LogEvent.SYSTEM_SERVICE_STOPPED,
+            outcome=LogOutcome.SUCCESS,
+        )
 
 
 def create_app() -> FastAPI:
-    configure_logging()
+    configure_logging(get_settings(), domain="api")
     application = FastAPI(
         title={{ (project_name ~ " API") | tojson }},
         version="0.1.0",

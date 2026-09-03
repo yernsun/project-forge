@@ -5,4 +5,5 @@ description: Add or modify Redis Stream workers, outbox relays, retries, idempot
 
 Use normalized envelopes. Process inside a Service-owned transaction, record the message ID before
 commit, and acknowledge only after commit. Bound retries, send exhausted work to the DLQ, and cover
-duplicate delivery and crash-before-ack behavior in tests.
+duplicate delivery and crash-before-ack behavior in tests. Bind message/event observability context,
+never log payloads, and emit success only after ACK.

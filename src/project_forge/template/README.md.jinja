@@ -118,7 +118,21 @@ uv run {{ command_name }} events retry-failed --limit 100 --dry-run
 The relay reclaims stale Redis pending messages and parks PostgreSQL outbox rows after the bounded
 attempt limit. Inspect status before replaying; only explicitly retry parked rows after fixing the
 underlying failure.
-{% endif %}{% endif %}
+{% endif %}
+
+### Log files
+
+Backend processes write rotated JSON Lines under
+`logs/<domain>/<instance>/{business,debug,error,sql}.log`. API, CLI, event relay, and added workers
+use separate domains; every concurrent process sharing a filesystem needs a unique
+`APP_LOG_INSTANCE_ID`. Compose persists `/app/logs` in the `runtime-logs` volume.
+
+`business.log` contains non-SQL INFO+, `debug.log` contains DEBUG, `error.log` contains WARNING+,
+and `sql.log` contains parameter-free SQL timing. SQL parameter values, bodies, headers, event
+payloads, secrets, and raw exception messages are never logged. See
+[Structured logging and file isolation](docs/architecture/logging.md) for configuration, routing,
+correlation, and extension rules.
+{% endif %}
 
 {% if profile != 'backend' %}### Frontend
 

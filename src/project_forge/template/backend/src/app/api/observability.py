@@ -1,30 +1,24 @@
 from __future__ import annotations
 
-import json
 import logging
 import re
 import time
-from contextvars import ContextVar, Token
-from datetime import UTC, datetime
 from uuid import uuid4
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-_REQUEST_ID = ContextVar[str | None]("request_id", default=None)
-_SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
-_LOG_FIELDS = (
-    "event",
-    "request_id",
-    "method",
-    "path",
-    "status",
-    "duration_ms",
-    "validation_errors",
+from app.observability import (
+    LogEvent,
+    LogOutcome,
+    configure_logging,
+    current_request_id,
+    log_event,
+    log_exception,
+    operation_context,
 )
+from app.observability.formatters import JsonLineFormatter as JsonLogFormatter
 
-
-def current_request_id() -> str | None:
-    return _REQUEST_ID.get()
+_SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
 def _request_id(headers: list[tuple[bytes, bytes]]) -> str:
@@ -40,44 +34,12 @@ def _request_id(headers: list[tuple[bytes, bytes]]) -> str:
     return uuid4().hex
 
 
-class JsonLogFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        payload: dict[str, object] = {
-            "timestamp": datetime.now(UTC).isoformat(),
-            "level": record.levelname,
-            "logger": record.name,
-            "message": record.getMessage(),
-        }
-        for field in _LOG_FIELDS:
-            value = getattr(record, field, None)
-            if value is not None:
-                payload[field] = value
-        if record.exc_info and record.exc_info[0] is not None:
-            payload["exception"] = record.exc_info[0].__name__
-        return json.dumps(payload, ensure_ascii=False, default=str, separators=(",", ":"))
-
-
-def configure_logging() -> None:
-    """Install one JSON handler for application-owned loggers."""
-
-    logger = logging.getLogger("app")
-    if any(getattr(handler, "_project_forge_json", False) for handler in logger.handlers):
-        return
-    handler = logging.StreamHandler()
-    handler.setFormatter(JsonLogFormatter())
-    handler._project_forge_json = True  # type: ignore[attr-defined]
-    logger.handlers.clear()
-    logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
-    logger.propagate = False
-
-
 class RequestContextMiddleware:
     """Attach a safe request ID and emit body-free structured access logs."""
 
     def __init__(self, app: ASGIApp) -> None:
         self._app = app
-        self._logger = logging.getLogger("app.access")
+        self._logger = logging.getLogger(__name__)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -85,7 +47,6 @@ class RequestContextMiddleware:
             return
 
         request_id = _request_id(scope.get("headers", []))
-        token: Token[str | None] = _REQUEST_ID.set(request_id)
         started = time.perf_counter()
         status_code = 500
 
@@ -99,30 +60,48 @@ class RequestContextMiddleware:
                 message["headers"] = headers
             await send(message)
 
-        try:
-            await self._app(scope, receive, send_with_request_id)
-        except BaseException:
-            self._logger.exception(
-                "request failed",
-                extra={
-                    "event": "request_failed",
-                    "request_id": request_id,
-                    "method": scope.get("method"),
-                    "path": scope.get("path"),
-                },
-            )
-            raise
-        finally:
-            duration_ms = round((time.perf_counter() - started) * 1000, 3)
-            self._logger.info(
-                "request completed",
-                extra={
-                    "event": "request_completed",
-                    "request_id": request_id,
-                    "method": scope.get("method"),
-                    "path": scope.get("path"),
-                    "status": status_code,
-                    "duration_ms": duration_ms,
-                },
-            )
-            _REQUEST_ID.reset(token)
+        with operation_context(request_id=request_id, operation_id=request_id):
+            try:
+                await self._app(scope, receive, send_with_request_id)
+            except BaseException as error:
+                log_exception(
+                    self._logger,
+                    "request failed",
+                    event=LogEvent.HTTP_REQUEST_FAILED,
+                    outcome=LogOutcome.FAILED,
+                    error=error,
+                    method=scope.get("method"),
+                    path=scope.get("path"),
+                    status=status_code,
+                    duration_ms=round((time.perf_counter() - started) * 1000, 3),
+                )
+                raise
+            else:
+                level = logging.ERROR if status_code >= 500 else logging.INFO
+                log_event(
+                    self._logger,
+                    level,
+                    "request completed",
+                    event=LogEvent.HTTP_REQUEST_COMPLETED,
+                    outcome=(
+                        LogOutcome.FAILED
+                        if status_code >= 500
+                        else (
+                            LogOutcome.REJECTED
+                            if status_code >= 400
+                            else LogOutcome.SUCCESS
+                        )
+                    ),
+                    method=scope.get("method"),
+                    path=scope.get("path"),
+                    status=status_code,
+                    duration_ms=round((time.perf_counter() - started) * 1000, 3),
+                )
+
+
+__all__ = [
+    "JsonLogFormatter",
+    "RequestContextMiddleware",
+    "configure_logging",
+    "current_request_id",
+]

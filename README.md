@@ -36,6 +36,11 @@ with Vue 3, Vite, TypeScript, PrimeVue using Aura with persisted system/light/da
 Vue Query, Pinia for client-owned state, and
 `zh-CN`/`en-US` catalogs.
 
+Every generated backend also includes process-isolated rotated JSONL logs at
+`logs/<domain>/<instance>/`, separate business/debug/error/SQL channels, request and event
+correlation, parameter-free SQL timing, recursive secret redaction, an observability skill/rule,
+and a static logging contract in the generated harness.
+
 ## Prerequisites
 
 | Tool | When required | Supported version |

@@ -14,8 +14,10 @@ preparation policy deliberately.
 
 Define the public contract as `ExampleRepository(BaseRepository, Protocol)` and the implementation
 as `PostgresExampleRepository(BaseRepository)`. Add exactly one `@cached_property` to UnitOfWork
-that returns `PostgresExampleRepository(self._require_connection())`; never instantiate the
+that returns `PostgresExampleRepository(self._require_connection("example"))`; never instantiate the
 implementation elsewhere. Do not import a pool/raw connection or open a cursor in a repository.
+Do not add business logging to repositories or pass SQL parameter values to observability; the
+labelled task-bound connection records parameter-free SQL timing.
 
 For batches, prefer set-based SQL, then `execute_many()` with an iterable of named mappings, and use
 fixed `copy_rows()` only for large import-style writes. Never issue one-row SQL in a loop or add a

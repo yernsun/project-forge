@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -30,9 +31,12 @@ from app.auth.security import (
     verify_password,
 )
 from app.domain.base import utc_now
+from app.observability import LogEvent, LogOutcome, log_event, operation_context
 from app.settings import Settings
 from app.uow.factory import UnitOfWorkFactory
 from app.uow.unit import UnitOfWork
+
+logger = logging.getLogger(__name__)
 
 
 def canonical_email(email: str) -> str:
@@ -158,7 +162,16 @@ class AuthService:
         async with self._unit_of_work_factory() as unit_of_work:
             created = await unit_of_work.auth.add_user(identity, credential)
             await unit_of_work.auth.add_workspace(workspace, created.user_id)
-            return await self._issue(unit_of_work, created)
+            issued = await self._issue(unit_of_work, created)
+        with operation_context(actor_id=created.user_id, workspace_id=workspace.workspace_id):
+            log_event(
+                logger,
+                logging.INFO,
+                "user signup committed",
+                event=LogEvent.AUTH_SIGNUP_COMPLETED,
+                outcome=LogOutcome.SUCCESS,
+            )
+        return issued
 
     async def login(self, email: str, password: str, client_key: str) -> IssuedSession:
         normalized_email = canonical_email(email)
@@ -178,27 +191,47 @@ class AuthService:
                 window_seconds=self._settings.auth_login_email_ip_window_seconds,
             )
         )
-        async with self._unit_of_work_factory() as unit_of_work:
-            user = await unit_of_work.auth.find_user_by_email(normalized_email)
-            password_hash = user.credential.password_hash if user else None
-            verification = await asyncio.to_thread(verify_password, password_hash, password)
-            if (
-                user is None
-                or user.identity.status is not UserStatus.ACTIVE
-                or not verification.valid
-            ):
-                raise InvalidCredentialsError()
-            if verification.needs_rehash:
-                replacement = await asyncio.to_thread(hash_password, password)
-                await unit_of_work.auth.update_password_hash(
-                    user.identity.user_id, replacement, utc_now()
+        try:
+            async with self._unit_of_work_factory() as unit_of_work:
+                user = await unit_of_work.auth.find_user_by_email(normalized_email)
+                password_hash = user.credential.password_hash if user else None
+                verification = await asyncio.to_thread(verify_password, password_hash, password)
+                if (
+                    user is None
+                    or user.identity.status is not UserStatus.ACTIVE
+                    or not verification.valid
+                ):
+                    raise InvalidCredentialsError()
+                if verification.needs_rehash:
+                    replacement = await asyncio.to_thread(hash_password, password)
+                    await unit_of_work.auth.update_password_hash(
+                        user.identity.user_id, replacement, utc_now()
+                    )
+                await unit_of_work.auth.clear_rate_limit(
+                    scope=email_ip_bucket.scope,
+                    subject_hash=email_ip_bucket.subject_hash,
+                    window_started_at=email_ip_bucket.window_started_at,
                 )
-            await unit_of_work.auth.clear_rate_limit(
-                scope=email_ip_bucket.scope,
-                subject_hash=email_ip_bucket.subject_hash,
-                window_started_at=email_ip_bucket.window_started_at,
+                issued = await self._issue(unit_of_work, user.identity)
+        except InvalidCredentialsError:
+            log_event(
+                logger,
+                logging.WARNING,
+                "user login rejected",
+                event=LogEvent.AUTH_LOGIN_REJECTED,
+                outcome=LogOutcome.REJECTED,
+                reason_code="invalid_credentials",
             )
-            return await self._issue(unit_of_work, user.identity)
+            raise
+        with operation_context(actor_id=issued.principal.user_id):
+            log_event(
+                logger,
+                logging.INFO,
+                "user login committed",
+                event=LogEvent.AUTH_LOGIN_COMPLETED,
+                outcome=LogOutcome.SUCCESS,
+            )
+        return issued
 
     async def resolve(self, session_token: str) -> SessionPrincipal:
         async with self._unit_of_work_factory() as unit_of_work:

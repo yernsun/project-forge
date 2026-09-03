@@ -16,9 +16,9 @@ Use the `project-forge` CLI as the only project mutation boundary.
    `--command-name` only when the user wants a different command.
 3. For a new repository, run `project-forge init`. Do not add undeclared optional capabilities.
 4. Inspect `.project-forge.yml`, the generated directory set, and Git status.
-5. Run `python harness/check.py` in the generated repository. It enforces architecture, SQL, i18n,
-   OpenAPI drift, backend tests, and frontend checks according to the selected profile. Run Docker
-   checks when Docker is available and the selected profile emits containers.
+5. Run `python harness/check.py` in the generated repository. It enforces architecture, structured
+   logging, SQL, i18n, OpenAPI drift, backend tests, and frontend checks according to the selected
+   profile. Run Docker checks when Docker is available and the selected profile emits containers.
 6. For an existing generated repository, require a clean Git worktree before `add`, `enable`,
    `configure`, or `update`. Use `configure --command-name` for command changes, including
    frontend-only preconfiguration. Never bypass the guard. An update conflict must leave all

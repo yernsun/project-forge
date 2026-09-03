@@ -15,7 +15,7 @@ different channels. Data is bound by Psycopg; structure is assembled only from t
   through `@cached_property`. Application modules never instantiate concrete repositories.
 - Every repository contract inherits `BaseRepository, Protocol`; every PostgreSQL implementation
   inherits `BaseRepository`. A repository receives only the task-bound `RepositoryConnection`
-  injected by `UnitOfWork._require_connection()`.
+  injected by `UnitOfWork._require_connection("repository-label")`.
 - Repositories never import connection/pool types or call `connect`, `connection`, `cursor`,
   `transaction`, `commit`, or `rollback`. The guarded adapter is the only application component
   that opens Psycopg cursors, and it becomes unusable when the UoW exits or crosses tasks.
@@ -116,6 +116,8 @@ repository helper.
 ## Preparation and review
 
 - Fixed hot-path statements explicitly use `prepare=True`.
+- SQL observation is owned by the task-bound connection. It records the parameterized template,
+  repository label, transaction ID, duration, and row count, but never parameter values.
 - Open-ended conditional shapes explicitly use `prepare=False` to avoid unbounded prepared statement
   shapes. The repository chooses this policy at every single-statement connection call.
 - Add query-shape tests for named binding, allowlisted ordering, canonical predicate order,

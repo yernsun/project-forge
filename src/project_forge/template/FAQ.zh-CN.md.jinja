@@ -274,6 +274,44 @@ uv run {{ command_name }} auth purge-expired
 
 不要通过提高生产限额掩盖错误的代理/客户端地址配置。
 
+## 日志文件与隔离
+
+### 后端日志写在哪里？
+
+直接从 `backend/` 运行时，每个进程写入 `logs/<domain>/<instance>/`，其中包含轮转的
+`business.log`、`debug.log`、`error.log` 和 `sql.log`。Compose 使用
+`APP_LOG_ROOT=/app/logs`，并将目录持久化到 `runtime-logs` named volume。
+
+```bash
+cd backend
+uv run {{ command_name }} config check --json
+find logs -type f -maxdepth 4 -print
+
+docker compose exec -T api find /app/logs -type f -maxdepth 4 -print
+docker volume inspect {{ project_slug }}_runtime-logs
+```
+
+API、CLI 与 event relay 使用不同 domain。默认 instance 是 hostname，可隔离常规 Compose
+容器。共享同一主机目录的每个同 domain 并发进程，都必须设置稳定且唯一的
+`APP_LOG_INSTANCE_ID`。
+
+### 为什么日志缺失、混写或持续增长？
+
+- 修改 `APP_LOG_*` 后重新创建进程；配置只在启动时读取。
+- 用 `{{ command_name }} config check --json` 确认实际 root、instance、level、轮转大小/数量和
+  SQL 开关。
+- 相同 domain/instance 会有意指向同一组文件；应分配唯一 instance ID，不能让多个 OS
+  进程共同轮转一组文件。
+- 名称无效、目录不可写，或路径包含 symlink/Windows junction 时会直接拒绝启动，不会
+  静默重定向日志。
+- 只有 `APP_LOG_LEVEL=DEBUG` 才写入 `debug.log`；`sql.log` 还要求
+  `APP_LOG_SQL_ENABLED=true`。控制台始终不输出 SQL。
+
+每个文件由 `APP_LOG_MAX_BYTES` 和 `APP_LOG_BACKUP_COUNT` 限制轮转，但
+`docker compose down` 不会删除 Compose volume。需要长期保留时应把 JSONL 外送或备份，
+只有明确执行运维清理时才删除 named volume。不要把原始日志附到公开问题中：脱敏是纵深
+防御，不代表生产日志可以公开。
+
 ## 诊断与工程维护
 
 ### 报告 Compose/认证问题前应收集什么？
@@ -287,7 +325,8 @@ docker compose --env-file .env.dev -f docker-compose.dev.yml config --quiet
 docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T api {{ command_name }} config check --json
 docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T api printenv \
   APP_ENV APP_ALLOWED_ORIGINS APP_SESSION_COOKIE_SECURE \
-  APP_SIGNUP_ENABLED FORWARDED_ALLOW_IPS
+  APP_SIGNUP_ENABLED FORWARDED_ALLOW_IPS APP_LOG_ROOT APP_LOG_INSTANCE_ID \
+  APP_LOG_LEVEL APP_LOG_SQL_ENABLED
 docker compose --env-file .env.dev -f docker-compose.dev.yml logs --tail=100 api frontend
 curl -i http://localhost:5173/health/ready
 python harness/check.py
@@ -321,3 +360,4 @@ Cookie jar 或 secret。
 | `csrf_invalid` / 已认证请求 `403` | Session Cookie、Origin、CSRF Cookie/Header 对 |
 | `429` | `Retry-After`、可信代理链、PostgreSQL 共享 limiter bucket |
 | 配置修改未生效 | Compose 最终配置及是否重新创建容器 |
+| 日志缺失或混写 | 实际日志 root/domain/instance、唯一 instance ID、权限、是否重建进程 |

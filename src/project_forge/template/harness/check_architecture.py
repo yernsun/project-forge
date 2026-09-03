@@ -263,7 +263,14 @@ def _is_require_connection_call(node: ast.AST) -> bool:
         and node.func.attr == "_require_connection"
         and isinstance(node.func.value, ast.Name)
         and node.func.value.id == "self"
-        and not node.args
+        and (
+            not node.args
+            or (
+                len(node.args) == 1
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            )
+        )
         and not node.keywords
     )
 
@@ -329,7 +336,7 @@ def _repository_instantiation_problems(
         if not node.args or not _is_require_connection_call(node.args[0]):
             problems.append(
                 f"{path}:{node.lineno}: UnitOfWork must inject "
-                "self._require_connection() as the first repository argument"
+                "self._require_connection(<static label>) as the first repository argument"
             )
         return_name = _last_name(function.returns, bindings) if function.returns else None
         if return_name != repository_name:
@@ -427,9 +434,17 @@ def scan(path: Path) -> list[str]:
 
     if relative.parts[0] == "domain":
         for module in sorted(candidates):
-            forbidden = any(
+            forbidden = module == "logging" or any(
                 _module_matches(module, prefix)
-                for prefix in ("fastapi", "psycopg", "app.api", "app.db", "app.services", "app.uow")
+                for prefix in (
+                    "fastapi",
+                    "psycopg",
+                    "app.api",
+                    "app.db",
+                    "app.observability",
+                    "app.services",
+                    "app.uow",
+                )
             ) or _is_app_repository_module(module)
             if forbidden:
                 problems.append(f"{path}: domain cannot import {module}")
@@ -459,6 +474,8 @@ def scan(path: Path) -> list[str]:
     if is_repository(path):
         problems.extend(_repository_class_problems(path, tree, bindings))
         for module in sorted(candidates):
+            if module == "logging" or _module_matches(module, "app.observability"):
+                problems.append(f"{path}: repository cannot emit business logs")
             if any(
                 _module_matches(module, prefix)
                 for prefix in ("fastapi", "app.api", "app.services")

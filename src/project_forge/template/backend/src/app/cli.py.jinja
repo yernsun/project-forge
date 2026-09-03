@@ -14,7 +14,8 @@ from pydantic import ValidationError
 from app.db.pool import create_pool
 from app.db.registry import MIGRATIONS
 {% if evented %}from app.events.service import OutboxService
-{% endif %}from app.settings import Settings, get_settings
+{% endif %}from app.observability import configure_logging
+from app.settings import Settings, get_settings
 {% if auth or evented %}from app.uow.factory import UnitOfWorkFactory
 {% endif %}
 app = typer.Typer(no_args_is_help=True)
@@ -48,6 +49,7 @@ def _safe_configuration_errors(error: ValidationError) -> list[dict[str, str]]:
 @asynccontextmanager
 async def _runner() -> AsyncIterator[MigrationRunner]:
     settings = get_settings()
+    configure_logging(settings, domain="cli")
     pool = create_pool(settings.database_url)
     await pool.open()
     try:
@@ -74,7 +76,9 @@ def configuration_check(
     """Validate effective settings and print only non-secret values."""
 
     try:
-        summary = Settings().safe_summary()
+        settings = Settings()
+        configure_logging(settings, domain="cli")
+        summary = settings.safe_summary()
     except ValidationError as error:
         errors = _safe_configuration_errors(error)
         if as_json:
@@ -92,6 +96,13 @@ def configuration_check(
         return
     typer.echo(f"environment={summary['environment']}")
     typer.echo(f"database_configured={str(summary['database_configured']).lower()}")
+    logging_summary = summary["logging"]
+    if not isinstance(logging_summary, dict):  # pragma: no cover - safe_summary invariant
+        raise RuntimeError("logging summary is invalid")
+    typer.echo(f"log_root={logging_summary['root']}")
+    typer.echo(f"log_instance_id={logging_summary['instance_id']}")
+    typer.echo(f"log_level={logging_summary['level']}")
+    typer.echo(f"log_sql_enabled={str(logging_summary['sql_enabled']).lower()}")
 {% if evented %}    typer.echo(f"redis_configured={str(summary['redis_configured']).lower()}")
 {% endif %}{% if auth %}    authentication = summary["authentication"]
     if not isinstance(authentication, dict):  # pragma: no cover - safe_summary invariant
@@ -134,6 +145,7 @@ def auth_purge_expired(
 
     async def run() -> tuple[int, int]:
         settings = get_settings()
+        configure_logging(settings, domain="cli")
         pool = create_pool(settings.database_url)
         await pool.open()
         try:
@@ -154,6 +166,7 @@ def event_status(
 
     async def run() -> dict[str, int]:
         settings = get_settings()
+        configure_logging(settings, domain="cli")
         pool = create_pool(settings.database_url)
         await pool.open()
         try:
@@ -182,6 +195,7 @@ def event_retry_failed(
 
     async def run() -> tuple[int, bool]:
         settings = get_settings()
+        configure_logging(settings, domain="cli")
         pool = create_pool(settings.database_url)
         await pool.open()
         try:

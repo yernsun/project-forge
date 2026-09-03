@@ -36,6 +36,12 @@ services:
     environment: &backend-env
       DATABASE_URL: postgresql://app:app@db:5432/app
       APP_ENV: development
+      APP_LOG_ROOT: /app/logs
+      APP_LOG_LEVEL: ${DEV_LOG_LEVEL:-DEBUG}
+      APP_LOG_MAX_BYTES: ${DEV_LOG_MAX_BYTES:-10485760}
+      APP_LOG_BACKUP_COUNT: ${DEV_LOG_BACKUP_COUNT:-5}
+      APP_LOG_SQL_ENABLED: ${DEV_LOG_SQL_ENABLED:-true}
+      APP_LOG_SQL_SLOW_MS: ${DEV_LOG_SQL_SLOW_MS:-200}
 {% if auth %}      APP_ALLOWED_ORIGINS: ${DEV_APP_ALLOWED_ORIGINS:-http://localhost:5173}
       APP_SESSION_COOKIE_SECURE: ${DEV_SESSION_COOKIE_SECURE:-false}
       FORWARDED_ALLOW_IPS: ${DEV_FORWARDED_ALLOW_IPS:-}
@@ -43,6 +49,8 @@ services:
       APP_SIGNUP_ENABLED: ${DEV_SIGNUP_ENABLED:-true}
 {% endif %}{% if evented %}      REDIS_URL: redis://redis:6379/0
 {% endif %}    command: ["{{ command_name }}", "migrate", "up"]
+    volumes:
+      - runtime-logs:/app/logs
     depends_on:
       db:
         condition: service_healthy
@@ -56,6 +64,7 @@ services:
       - "${DEV_API_BIND_HOST:-127.0.0.1}:${DEV_API_PORT:-8000}:8000"
     volumes:
       - ./backend/src:/app/src
+      - runtime-logs:/app/logs
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -69,6 +78,7 @@ services:
     command: ["python", "-m", "app.events.worker"]
     volumes:
       - ./backend/src:/app/src
+      - runtime-logs:/app/logs
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -98,6 +108,7 @@ services:
 
 volumes:
 {% if profile != 'frontend' %}  postgres-dev:
+  runtime-logs:
 {% if evented %}  redis-dev:
 {% endif %}{% endif %}{% if profile != 'backend' %}  frontend-node-modules:
 {% endif %}

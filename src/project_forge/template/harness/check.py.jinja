@@ -29,6 +29,7 @@ def require(tool: str) -> bool:
 
 def _run_checks() -> int:
     run([sys.executable, "harness/check_architecture.py"])
+    run([sys.executable, "harness/check_logging.py"])
     run([sys.executable, "harness/check_sql.py"])
     run([sys.executable, "harness/check_i18n.py"])
     backend = ROOT / "backend"
