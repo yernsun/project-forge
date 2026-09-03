@@ -52,7 +52,7 @@ jobs:
           tests/test_cli.py::test_python_module_and_console_app_have_equivalent_global_contract
           tests/test_cli.py::test_init_really_renders_each_profile
           tests/test_cli.py::test_update_check_detects_same_version_template_digest_without_mutation
-          tests/test_cli.py::test_same_version_update_migrates_legacy_state_schema_and_missing_digest
+          tests/test_cli.py::test_update_migrates_legacy_state_and_hard_switches_app_command
           tests/test_updates.py::test_junction_detection_supports_modern_and_python_311_paths
           tests/test_updates.py::test_real_windows_junction_is_rejected
           tests/test_render_matrix.py::test_real_windows_log_junction_is_rejected
