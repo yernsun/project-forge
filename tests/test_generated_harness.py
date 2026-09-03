@@ -70,6 +70,7 @@ def test_static_generated_harnesses_pass(state: ProjectState, tmp_path: Path) ->
     assert '"--cov-fail-under=90"' in harness_source
     assert '"--env-file"' in harness_source
     assert "harness-only-rate-limit-secret-at-least-32-bytes" in harness_source
+    assert f'"{state.command_name}", "--help"' in harness_source
     for script in ("check_architecture.py", "check_sql.py", "check_i18n.py"):
         subprocess.run(
             [sys.executable, f"harness/{script}"],
@@ -206,14 +207,26 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
     workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
     assert_expected_action_refs(workflow)
     quality = workflow["jobs"]["generator-quality"]
-    assert quality["strategy"]["matrix"]["python-version"] == [
+    assert "strategy" not in quality
+    quality_python = [
+        step
+        for step in quality["steps"]
+        if step.get("uses") == EXPECTED_ACTION_REFS["astral-sh/setup-uv"]
+    ]
+    assert quality_python[0]["with"]["python-version"] == "3.13"
+    quality_commands = "\n".join(str(step.get("run", "")) for step in quality["steps"])
+    assert "harness/check.py --mode quality" in quality_commands
+
+    compatibility = workflow["jobs"]["generator-python-compatibility"]
+    assert compatibility["strategy"]["matrix"]["python-version"] == [
         "3.11",
         "3.12",
-        "3.13",
         "3.14",
     ]
-    quality_commands = "\n".join(str(step.get("run", "")) for step in quality["steps"])
-    assert "harness/check.py" in quality_commands
+    compatibility_commands = "\n".join(
+        str(step.get("run", "")) for step in compatibility["steps"]
+    )
+    assert "harness/check.py --mode compatibility" in compatibility_commands
 
     contracts = workflow["jobs"]["openapi-contracts"]
     contract_node_steps = [
@@ -223,7 +236,7 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
     ]
     assert contract_node_steps[0]["with"]["node-version"] == "24"
     contract_commands = "\n".join(str(step.get("run", "")) for step in contracts["steps"])
-    assert "harness/manage_openapi_contracts.py --check" in contract_commands
+    assert "harness/check.py --mode contracts" in contract_commands
 
     generated = workflow["jobs"]["generated-projects"]
     assert generated["services"]["postgres"]["image"] == "postgres:16-alpine"
@@ -242,7 +255,8 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
     assert generated_node_steps[0]["with"]["node-version"] == "24"
     steps = "\n".join(str(step.get("run", "")) for step in generated["steps"])
     assert "uv sync --frozen --all-groups" in steps
-    assert "uv run --frozen --no-sync app migrate up" in steps
+    assert "--command-name generated-app" in steps
+    assert "uv run --frozen --no-sync generated-app migrate up" in steps
     e2e = workflow["jobs"]["fullstack-auth-compose-e2e"]
     e2e_node_steps = [
         step
@@ -259,17 +273,14 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
         "Start development Compose stack"
     )
 
-    backend_compatibility = workflow["jobs"]["backend-runtime-compatibility"]
-    assert backend_compatibility["strategy"]["matrix"]["python-version"] == [
-        "3.11",
-        "3.12",
-        "3.13",
-        "3.14",
-    ]
+    backend_compatibility = workflow["jobs"]["backend-runtime"]
+    assert "strategy" not in backend_compatibility
     backend_commands = "\n".join(
         str(step.get("run", "")) for step in backend_compatibility["steps"]
     )
-    assert "--profile backend --auth --evented --sample --no-git" in backend_commands
+    assert "--profile backend --auth --evented --sample" in backend_commands
+    assert "--command-name compat-backend --no-git" in backend_commands
+    assert "compat-backend migrate up" in backend_commands
     assert "--extra auth --extra evented" in backend_commands
 
     frontend_compatibility = workflow["jobs"]["frontend-runtime-compatibility"]
@@ -278,10 +289,16 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
 
     package = workflow["jobs"]["package-command"]
     assert package["strategy"]["matrix"]["python-version"] == ["3.11", "3.14"]
+    package_commands = "\n".join(str(step.get("run", "")) for step in package["steps"])
+    assert "content-agent --help" in package_commands
+    assert "forge-service --help" in package_commands
+    assert "python content-agent/harness/check.py" in package_commands
 
     platform = workflow["jobs"]["generator-platform-smoke"]
     assert platform["strategy"]["matrix"]["os"] == ["macos-latest", "windows-latest"]
-    assert "--no-cov" in "\n".join(str(step.get("run", "")) for step in platform["steps"])
+    platform_commands = "\n".join(str(step.get("run", "")) for step in platform["steps"])
+    assert "--no-cov" in platform_commands
+    assert "test_real_windows_junction_is_rejected" in platform_commands
 
     security = workflow["jobs"]["security-audit"]
     security_commands = "\n".join(str(step.get("run", "")) for step in security["steps"])
@@ -305,6 +322,16 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
     assert "cyclonedx-json" in release_commands
     assert "--no-emit-project" in release_commands
     assert "gh release create" in release_commands
+
+
+def test_root_harness_exposes_full_quality_contract_and_compatibility_modes() -> None:
+    source = (ROOT / "harness/check.py").read_text(encoding="utf-8")
+
+    assert '("full", "quality", "contracts", "compatibility")' in source
+    assert 'default="full"' in source
+    assert '"pytest", "-n", "auto"' in source
+    assert '"-m",\n        "compat"' in source
+    assert '"harness/manage_openapi_contracts.py"' in source
 
 
 def test_architecture_harness_rejects_boundary_bypasses(tmp_path: Path) -> None:

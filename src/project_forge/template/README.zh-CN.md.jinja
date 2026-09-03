@@ -86,9 +86,9 @@ docker compose --env-file .env.dev -f docker-compose.dev.yml up -d db{% if event
 cp backend/.env.example backend/.env
 cd backend
 uv sync --frozen --all-groups{% if auth %} --extra auth{% endif %}{% if evented %} --extra evented{% endif %}
-uv run app migrate status
-uv run app migrate up
-uv run app config check --json
+uv run {{ command_name }} migrate status
+uv run {{ command_name }} migrate up
+uv run {{ command_name }} config check --json
 uv run fastapi dev
 ```
 
@@ -98,8 +98,8 @@ uv run fastapi dev
 
 ```bash
 cd backend
-uv run app auth purge-expired --dry-run
-uv run app auth purge-expired
+uv run {{ command_name }} auth purge-expired --dry-run
+uv run {{ command_name }} auth purge-expired
 ```
 {% endif %}{% if evented %}
 在另一个后端终端运行 outbox relay：
@@ -107,8 +107,8 @@ uv run app auth purge-expired
 ```bash
 cd backend
 uv run python -m app.events.worker
-uv run app events status --json
-uv run app events retry-failed --limit 100 --dry-run
+uv run {{ command_name }} events status --json
+uv run {{ command_name }} events retry-failed --limit 100 --dry-run
 ```
 
 relay 会回收 Redis 中长时间 pending 的消息，并在达到有界尝试次数后停放 PostgreSQL
@@ -202,7 +202,7 @@ curl http://localhost:8000/health/ready
 ```
 
 每个 API 响应都带有 `X-Request-ID`，可用于关联脱敏后的公开错误与结构化 API 日志。
-`app config check --json` 只报告不含秘密的有效设置。
+`{{ command_name }} config check --json` 只报告不含秘密的有效设置。
 
 {% if sample and not auth %}创建和查询 sample item：
 
@@ -258,14 +258,17 @@ gateway 默认绑定 `127.0.0.1:8080`，预期部署在外部 TLS terminator 后
 project-forge features .
 project-forge doctor .
 project-forge update --check .
+project-forge update . --check --json
 project-forge update .
+project-forge configure --command-name {{ command_name }} -C .
 ```
 
 Project Forge 支持单向 `add`/`enable`，不移除能力。更新冲突会保留全部受管文件，并生成
 `.rej` 供人工解决。
 
-状态 schema 2 保存确定性的模板 digest。重新安装工具来源后，`update --check` 会执行真实
-dry render 和三方比较，因此即使两端仍显示 `0.2.0`，也能识别刷新后的模板内容：
+生成后端命令为 `{{ command_name }}`，内部 Python 包仍为 `app`。状态 schema 3 保存该命令与
+确定性模板 digest。重新安装工具来源后，`update --check` 会执行真实 dry render
+和三方比较，因此公开版本不变时也能识别刷新后的模板内容：
 
 ```bash
 uv tool upgrade --reinstall project-forge

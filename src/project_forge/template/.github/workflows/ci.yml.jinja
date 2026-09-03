@@ -57,7 +57,7 @@ jobs:
         working-directory: backend
         run: |
           uv sync --frozen --all-groups{% if auth %} --extra auth{% endif %}{% if evented %} --extra evented{% endif %}
-          uv run --frozen --no-sync app migrate up
+          uv run --frozen --no-sync {{ command_name }} migrate up
 {% endif %}      - name: Validate generated project
         env:
           HARNESS_STRICT: "1"

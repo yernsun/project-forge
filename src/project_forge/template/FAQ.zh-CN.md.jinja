@@ -268,8 +268,8 @@ openssl rand -hex 32
 
 ```bash
 cd backend
-uv run app auth purge-expired --dry-run
-uv run app auth purge-expired
+uv run {{ command_name }} auth purge-expired --dry-run
+uv run {{ command_name }} auth purge-expired
 ```
 
 不要通过提高生产限额掩盖错误的代理/客户端地址配置。
@@ -284,7 +284,7 @@ uv run app auth purge-expired
 docker compose ls
 docker compose --env-file .env.dev -f docker-compose.dev.yml ps
 docker compose --env-file .env.dev -f docker-compose.dev.yml config --quiet
-docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T api app config check --json
+docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T api {{ command_name }} config check --json
 docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T api printenv \
   APP_ENV APP_ALLOWED_ORIGINS APP_SESSION_COOKIE_SECURE \
   APP_SIGNUP_ENABLED FORWARDED_ALLOW_IPS
@@ -294,7 +294,7 @@ python harness/check.py
 ```
 
 每个 API 响应都带有 `X-Request-ID`。当公开响应出于安全原因省略字段级校验详情时，可用
-该标识在 API 结构化日志中查找对应记录。`app config check --json` 只输出脱敏后的有效配置
+该标识在 API 结构化日志中查找对应记录。`{{ command_name }} config check --json` 只输出脱敏后的有效配置
 摘要，绝不会打印数据库 URL、密码、Cookie、session/CSRF token 或限流秘密。
 
 需要把缺失的 uv、npm 或 Docker 视为失败时，使用严格模式：

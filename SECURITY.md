@@ -2,9 +2,13 @@
 
 ## Supported version
 
-Security fixes currently target Project Forge `0.2.0` and projects updated with the latest packaged
-`0.2.0` template digest. Install the latest tool build and run `project-forge update PATH` before
+Security fixes currently target Project Forge `0.3.0` and projects updated with the latest packaged
+`0.3.0` template digest. Install the latest tool build and run `project-forge update PATH` before
 reporting a generated-project issue.
+
+Controlled updates reject symbolic links and Windows junctions across managed files and metadata,
+bound baseline archive resources before extraction, and write conflict diagnostics only beneath a
+verified real project root.
 
 ## Reporting
 

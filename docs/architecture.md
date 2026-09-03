@@ -7,10 +7,18 @@ Project Forge has three layers:
 3. The update engine compares the previous template baseline, the current project, and the new
    desired render. One-sided changes apply automatically; double-sided changes become `.rej`.
 
-State schema 2 also records a deterministic SHA-256 digest of the packaged rendering source. A
-read-only `update --check` always performs the isolated render and three-way comparison, so it can
-detect same-version template refreshes without touching managed files, state, baseline, or conflict
-artifacts. Apply and preview share one update planner to prevent their semantics from drifting.
+State schema 3 records both the generated console command and a deterministic SHA-256 digest of the
+packaged rendering source. Schema v1/v2 loads with its historical `app` command identity; the next
+mutating operation hard-switches it to the project slug. A read-only `update --check` always performs
+the isolated render and three-way comparison, so it can report that break and detect same-version
+template refreshes without touching managed files, state, baseline, or conflict artifacts.
+
+Preview and apply return one shared result model with stable, sorted paths. Baselines normalize tar
+and gzip metadata, ordering, ownership, timestamps, and permissions, making equal renders byte
+identical. An up-to-date update writes nothing. Extraction rejects archives above the compressed,
+member-count, per-member, or total-uncompressed limits before creating output, and every project
+write rejects symlink or Windows-junction components. Obstructed conflict diagnostics fall back to a
+regular file directly inside the verified project root.
 
 The generated backend follows the enforced dependency direction
 `API → Service → Unit of Work → Repository → PostgreSQL`. API DTOs, domain models, credential
@@ -34,7 +42,7 @@ login and signup limits. Production fails closed unless cookies are Secure, orig
 dedicated rate-limit secret is configured.
 
 Generated HTTP adapters attach or safely propagate `X-Request-ID` and emit structured access and
-validation logs without bodies, credentials, cookies, or secrets. `app config check --json` exposes
+validation logs without bodies, credentials, cookies, or secrets. `<command-name> config check --json` exposes
 only a redacted effective-settings summary. Event relays reclaim stale pending deliveries, bound
 attempts, park failed outbox rows, and require explicit operator replay after remediation.
 
@@ -44,7 +52,8 @@ contracts, and locale state in one
 i18n module that also updates PrimeVue's locale object. Its application shell has explicit loading,
 guest, and authenticated states; protected queries do not mount for guests.
 
-CI treats every valid render as a product: Python grammar and generator tests run across supported
-Python releases, representative CLI flows smoke-test macOS and Windows, frontend checks use only
-supported Node LTS lines, and dependency audits, coverage gates, Compose readiness, wheel isolation,
-checksums, SBOM, and provenance protect the delivery path.
+CI treats every valid render as a product: Python 3.13 runs the complete parallelized render/quality
+matrix, while 3.11, 3.12, and 3.14 run the compatibility-marked CLI, state-migration, and update
+contract. OpenAPI contracts run independently. Representative CLI flows (including a real Windows
+junction) smoke-test macOS and Windows; supported Node LTS checks, dependency audits, coverage gates,
+Compose readiness, wheel isolation, checksums, SBOM, and provenance protect the delivery path.

@@ -39,6 +39,10 @@ def _run_checks() -> int:
         if (backend / "src/app/events").exists():
             sync.extend(["--extra", "evented"])
         run(sync, backend)
+        run(
+            ["uv", "run", "--frozen", "--no-sync", "{{ command_name }}", "--help"],
+            backend,
+        )
         run(["uv", "run", "--frozen", "--no-sync", "ruff", "check", "."], backend)
         run(["uv", "run", "--frozen", "--no-sync", "mypy", "src/app"], backend)
         pytest = ["uv", "run", "--frozen", "--no-sync", "pytest"]

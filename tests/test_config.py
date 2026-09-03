@@ -5,10 +5,17 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from project_forge.config import Locale, Profile, ProjectState, slugify
+from project_forge.config import (
+    Locale,
+    Profile,
+    ProjectState,
+    normalize_command_name,
+    slugify,
+)
 from project_forge.identity import CURRENT_STATE_SCHEMA_VERSION, current_template_digest
 
 ROOT = Path(__file__).resolve().parents[1]
+pytestmark = pytest.mark.compat
 
 
 def test_noninteractive_defaults_are_fullstack_zh_cn_with_sample() -> None:
@@ -18,9 +25,39 @@ def test_noninteractive_defaults_are_fullstack_zh_cn_with_sample() -> None:
     assert state.sample is True
     assert state.auth is False
     assert state.evented is False
-    assert state.schema_version == CURRENT_STATE_SCHEMA_VERSION == 2
+    assert state.schema_version == CURRENT_STATE_SCHEMA_VERSION == 3
     assert state.template_digest == current_template_digest()
     assert state.project_slug == "my-app"
+    assert state.command_name == "my-app"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("Content Agent", "content-agent"), ("  API__Worker  ", "api-worker")],
+)
+def test_command_name_is_normalized(value: str, expected: str) -> None:
+    assert normalize_command_name(value) == expected
+    assert ProjectState.create("Fixture", command_name=value).command_name == expected
+
+
+@pytest.mark.parametrize("value", ["", "---", "工程", "a" * 101])
+def test_invalid_command_name_is_rejected(value: str) -> None:
+    with pytest.raises(ValueError):
+        ProjectState.create("Fixture", command_name=value)
+
+
+@pytest.mark.parametrize("schema_version", [1, 2])
+def test_legacy_state_defaults_to_historical_app_command(schema_version: int) -> None:
+    state = ProjectState.model_validate(
+        {
+            "schema_version": schema_version,
+            "template_version": "0.2.0",
+            "project_name": "Content Agent",
+            "project_slug": "content-agent",
+        }
+    )
+    assert state.command_name == "app"
+    assert state.with_current_template_identity().command_name == "content-agent"
 
 
 @pytest.mark.parametrize(
@@ -56,7 +93,9 @@ def test_python_runtime_contracts_target_311_and_locks_match() -> None:
     root_project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     backend_root = ROOT / "src/project_forge/template/backend"
     backend_project = tomllib.loads(
-        (backend_root / "pyproject.toml").read_text(encoding="utf-8")
+        (backend_root / "pyproject.toml.jinja")
+        .read_text(encoding="utf-8")
+        .replace("{{ command_name }}", "fixture-command")
     )
     root_lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
     backend_lock = tomllib.loads((backend_root / "uv.lock").read_text(encoding="utf-8"))
@@ -80,6 +119,7 @@ def test_python_runtime_contracts_target_311_and_locks_match() -> None:
         for dependency in backend_project["dependency-groups"]["dev"]
     )
     assert "pytest>=9.0.3,<10" in root_project["dependency-groups"]["dev"]
+    assert "pytest-xdist>=3.8,<4" in root_project["dependency-groups"]["dev"]
     assert "pytest>=9.0.3,<10" in backend_project["dependency-groups"]["dev"]
     assert "pytest-asyncio>=1.3,<2" in backend_project["dependency-groups"]["dev"]
     assert "httpx2>=2.12,<3" in backend_project["dependency-groups"]["dev"]
@@ -185,7 +225,9 @@ def test_root_and_packaged_faqs_are_bilingual_and_synchronized() -> None:
 
     for root_path, template_path in pairs:
         root_content = root_path.read_text(encoding="utf-8")
-        template_content = template_path.read_text(encoding="utf-8")
+        template_content = template_path.read_text(encoding="utf-8").replace(
+            "{{ command_name }}", "content-agent"
+        )
         assert root_content == template_content
         assert root_content.count("```") % 2 == 0
         for marker in (
@@ -197,7 +239,7 @@ def test_root_and_packaged_faqs_are_bilingual_and_synchronized() -> None:
             "172.20.0.10",
             "https://172.20.0.10:8443",
             "X-Request-ID",
-            "app config check --json",
+            "content-agent config check --json",
         ):
             assert marker in root_content
         assert "192.168." not in root_content

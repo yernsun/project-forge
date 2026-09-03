@@ -12,6 +12,11 @@ project_slug:
   help: Lowercase filesystem slug
   default: "{{ project_name | lower | replace(' ', '-') }}"
 
+command_name:
+  type: str
+  help: Lowercase generated backend console command
+  default: "{{ project_slug }}"
+
 profile:
   type: str
   choices:
@@ -41,12 +46,12 @@ default_locale:
 
 schema_version:
   type: int
-  default: 2
+  default: 3
   when: false
 
 template_version:
   type: str
-  default: 0.2.0
+  default: 0.3.0
   when: false
 
 template_digest:

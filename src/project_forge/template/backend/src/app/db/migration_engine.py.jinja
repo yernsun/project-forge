@@ -115,7 +115,9 @@ class MigrationRunner:
         """Reject unknown or modified applied migrations without requiring a current schema."""
 
         if not await self._tracking_exists():
-            raise MigrationError("database is not initialized; run `app migrate up`")
+            raise MigrationError(
+                "database is not initialized; run `{{ command_name }} migrate up`"
+            )
         applied = await self._applied()
         known = {migration.migration_id: migration for migration in self._migrations}
         unknown = set(applied) - known.keys()
@@ -137,7 +139,8 @@ class MigrationRunner:
         )
         if pending:
             raise MigrationError(
-                f"database has pending migrations: {list(pending)}; run `app migrate up`"
+                f"database has pending migrations: {list(pending)}; "
+                "run `{{ command_name }} migrate up`"
             )
 
     async def validate(self) -> None:

@@ -7,5 +7,5 @@ for applied nodes, and applies pending nodes under a PostgreSQL advisory lock.
 There is intentionally no automatic startup migration and no `down` operation. The migration command
 validates applied history before it installs pending nodes. Application startup and readiness require
 that the applied history is known, unmodified, and has no pending nodes, so an instance with an older
-schema never accepts traffic. Operators run `app migrate status`, `app migrate validate`, and
-`app migrate up` explicitly.
+schema never accepts traffic. Operators run `{{ command_name }} migrate status`,
+`{{ command_name }} migrate validate`, and `{{ command_name }} migrate up` explicitly.

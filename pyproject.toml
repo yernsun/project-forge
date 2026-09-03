@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "project-forge"
-version = "0.2.0"
+version = "0.3.0"
 description = "Composable frontend/backend project generator with controlled template updates"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -30,6 +30,7 @@ dev = [
   "pip-audit>=2.9,<3",
   "pytest>=9.0.3,<10",
   "pytest-cov>=6,<7",
+  "pytest-xdist>=3.8,<4",
   "ruff>=0.11,<1",
   "types-PyYAML>=6.0.12.20250516",
 ]
@@ -40,6 +41,9 @@ packages = ["src/project_forge"]
 [tool.pytest.ini_options]
 addopts = "-q --cov=project_forge --cov-branch --cov-report=term-missing --cov-fail-under=85"
 testpaths = ["tests"]
+markers = [
+  "compat: critical CLI, state migration, and controlled-update compatibility coverage",
+]
 
 [tool.ruff]
 target-version = "py311"

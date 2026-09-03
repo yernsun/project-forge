@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import tarfile
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,7 @@ import pytest
 from copier.errors import CopierError
 from typer.testing import CliRunner
 
-from project_forge import __version__
+from project_forge import __version__, renderer
 from project_forge.cli import app
 from project_forge.config import Profile, ProjectState, dump_state, load_state
 from project_forge.identity import current_template_digest
@@ -21,6 +22,7 @@ from project_forge.renderer import initialize_project
 
 runner = CliRunner()
 ANSI_ESCAPE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+pytestmark = pytest.mark.compat
 
 
 def commit_project(project: Path, message: str = "fixture") -> None:
@@ -69,7 +71,16 @@ def test_global_help_lists_only_explicit_commands() -> None:
     result = runner.invoke(app, ["--help"])
 
     assert result.exit_code == 0
-    for command in ("init", "doctor", "features", "add", "enable", "update", "install-skill"):
+    for command in (
+        "init",
+        "doctor",
+        "features",
+        "add",
+        "enable",
+        "configure",
+        "update",
+        "install-skill",
+    ):
         assert command in result.stdout
 
 
@@ -183,8 +194,221 @@ def test_init_really_renders_each_profile(
     state = load_state(destination)
     assert state.profile is profile
     assert state.sample is sample
+    assert state.command_name == profile.value
     assert (destination / "backend").exists() is has_backend
     assert (destination / "frontend").exists() is has_frontend
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [([], "content-agent"), (["--command-name", "Content Agent CLI"], "content-agent-cli")],
+    ids=("slug-default", "explicit-normalized"),
+)
+def test_init_generates_default_and_custom_console_commands(
+    arguments: list[str], expected: str, tmp_path: Path
+) -> None:
+    destination = tmp_path / "content-agent"
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            str(destination),
+            "--name",
+            "Content Agent",
+            "--profile",
+            "backend",
+            "--no-sample",
+            "--no-git",
+            *arguments,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert load_state(destination).command_name == expected
+    backend_project = tomllib.loads(
+        (destination / "backend/pyproject.toml").read_text(encoding="utf-8")
+    )
+    assert backend_project["project"]["scripts"] == {expected: "app.cli:main"}
+    assert backend_project["tool"]["fastapi"]["entrypoint"] == "app.main:app"
+
+
+@pytest.mark.parametrize("command_name", ["", "---", "工程", "a" * 101])
+def test_init_rejects_invalid_command_names(command_name: str, tmp_path: Path) -> None:
+    destination = tmp_path / "invalid"
+    result = runner.invoke(
+        app,
+        ["init", str(destination), "--command-name", command_name, "--no-git"],
+    )
+
+    assert result.exit_code == 2
+    assert "command" in result.output.lower() or "ASCII" in result.output
+    assert not destination.exists()
+
+
+def test_frontend_can_preconfigure_command_before_adding_backend(tmp_path: Path) -> None:
+    project = tmp_path / "frontend"
+    initialized = runner.invoke(
+        app,
+        ["init", str(project), "--profile", "frontend"],
+    )
+    assert initialized.exit_code == 0, initialized.output
+    commit_project(project, "frontend")
+
+    configured = runner.invoke(
+        app, ["configure", "--command-name", "Content CLI", "-C", str(project)]
+    )
+    assert configured.exit_code == 0, configured.output
+    assert load_state(project).command_name == "content-cli"
+    assert not (project / "backend").exists()
+    commit_project(project, "preconfigure command")
+    added = runner.invoke(app, ["add", "backend", "-C", str(project)])
+
+    assert added.exit_code == 0, added.output
+    backend_project = tomllib.loads(
+        (project / "backend/pyproject.toml").read_text(encoding="utf-8")
+    )
+    assert backend_project["project"]["scripts"] == {"content-cli": "app.cli:main"}
+
+
+def test_configure_renames_command_and_second_run_is_idempotent(tmp_path: Path) -> None:
+    project = tmp_path / "service"
+    initialized = runner.invoke(
+        app,
+        ["init", str(project), "--profile", "backend", "--no-sample"],
+    )
+    assert initialized.exit_code == 0, initialized.output
+    commit_project(project, "initial")
+
+    configured = runner.invoke(
+        app, ["configure", "--command-name", "Service Operator", "-C", str(project)]
+    )
+    assert configured.exit_code == 0, configured.output
+    assert load_state(project).command_name == "service-operator"
+    scripts = tomllib.loads(
+        (project / "backend/pyproject.toml").read_text(encoding="utf-8")
+    )["project"]["scripts"]
+    assert scripts == {"service-operator": "app.cli:main"}
+    commit_project(project, "configure")
+    baseline = (project / ".project-forge/baseline.tar.gz").read_bytes()
+
+    repeated = runner.invoke(
+        app, ["configure", "--command-name", "service-operator", "-C", str(project)]
+    )
+    assert repeated.exit_code == 0, repeated.output
+    assert "up to date" in repeated.output
+    assert (project / ".project-forge/baseline.tar.gz").read_bytes() == baseline
+    status = subprocess.run(
+        ["git", "-C", str(project), "status", "--porcelain"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert status.stdout == ""
+
+
+def test_configure_requires_clean_git(tmp_path: Path) -> None:
+    project = tmp_path / "dirty"
+    initialize_project(ProjectState.create("Dirty", profile=Profile.FRONTEND), project)
+    commit_project(project)
+    (project / "notes.md").write_text("dirty\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app, ["configure", "--command-name", "new-command", "-C", str(project)]
+    )
+
+    assert result.exit_code == 2
+    assert "uncommitted or untracked" in result.output
+
+
+def test_configure_rejects_invalid_command_without_mutation(tmp_path: Path) -> None:
+    project = tmp_path / "invalid-configure"
+    initialize_project(ProjectState.create("Invalid Configure", profile=Profile.FRONTEND), project)
+    commit_project(project)
+    state_before = (project / ".project-forge.yml").read_bytes()
+    baseline_before = (project / ".project-forge/baseline.tar.gz").read_bytes()
+
+    result = runner.invoke(
+        app, ["configure", "--command-name", "---", "-C", str(project)]
+    )
+
+    assert result.exit_code == 2
+    assert (project / ".project-forge.yml").read_bytes() == state_before
+    assert (project / ".project-forge/baseline.tar.gz").read_bytes() == baseline_before
+
+
+def test_configure_conflict_writes_only_rejection(tmp_path: Path) -> None:
+    project = tmp_path / "configure-conflict"
+    state = ProjectState.create(
+        "Configure Conflict", profile=Profile.BACKEND, sample=False
+    )
+    initialize_project(state, project)
+    relative = Path("backend/pyproject.toml")
+    extracted = tmp_path / "baseline"
+    extracted.mkdir()
+    renderer._extract_baseline(project, extracted)
+    original = f'"{state.command_name}" = "app.cli:main"'
+    (extracted / relative).write_text(
+        (extracted / relative)
+        .read_text(encoding="utf-8")
+        .replace(original, '"baseline-command" = "app.cli:main"'),
+        encoding="utf-8",
+    )
+    renderer._write_baseline(extracted, project)
+    (project / relative).write_text(
+        (project / relative)
+        .read_text(encoding="utf-8")
+        .replace(original, '"user-command" = "app.cli:main"'),
+        encoding="utf-8",
+    )
+    commit_project(project)
+    state_before = (project / ".project-forge.yml").read_bytes()
+    baseline_before = (project / ".project-forge/baseline.tar.gz").read_bytes()
+
+    result = runner.invoke(
+        app, ["configure", "--command-name", "target-command", "-C", str(project)]
+    )
+
+    assert result.exit_code == 3
+    assert (project / relative).read_text(encoding="utf-8").find("user-command") >= 0
+    assert (project / ".project-forge.yml").read_bytes() == state_before
+    assert (project / ".project-forge/baseline.tar.gz").read_bytes() == baseline_before
+    rejections = list(project.rglob("*.rej"))
+    assert len(rejections) == 1
+    assert rejections[0] == project / "backend/pyproject.toml.rej"
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_command"),
+    [
+        (["add", "frontend"], "legacy-operation"),
+        (["enable", "sample"], "legacy-operation"),
+        (["configure", "--command-name", "Operator CLI"], "operator-cli"),
+    ],
+    ids=("add", "enable", "configure"),
+)
+def test_each_mutating_operation_migrates_legacy_command_state(
+    arguments: list[str], expected_command: str, tmp_path: Path
+) -> None:
+    project = tmp_path / "legacy-operation"
+    initialize_project(
+        ProjectState.create("Legacy Operation", profile=Profile.BACKEND, sample=False),
+        project,
+    )
+    state_path = project / ".project-forge.yml"
+    lines = [
+        "schema_version: 2" if line.startswith("schema_version:") else line
+        for line in state_path.read_text(encoding="utf-8").splitlines()
+        if not line.startswith("command_name:")
+    ]
+    state_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    commit_project(project)
+
+    result = runner.invoke(app, [*arguments, "-C", str(project)])
+
+    assert result.exit_code == 0, result.output
+    migrated = load_state(project)
+    assert migrated.schema_version == 3
+    assert migrated.command_name == expected_command
 
 
 def test_init_wraps_copier_error_as_exit_two_without_partial_destination(
@@ -608,6 +832,64 @@ def test_update_check_compares_with_installed_template_only(
     assert expected_output in result.stdout
 
 
+def test_update_json_has_stable_sorted_shape_for_check_and_apply(tmp_path: Path) -> None:
+    project = tmp_path / "json-result"
+    initialize_project(ProjectState.create("JSON Result"), project)
+    commit_project(project)
+    expected_keys = {
+        "status",
+        "project",
+        "target_template_version",
+        "target_template_digest",
+        "identity_changed",
+        "changed_paths",
+        "conflict_paths",
+        "rejection_paths",
+        "breaking_changes",
+    }
+
+    checked = runner.invoke(app, ["update", str(project), "--check", "--json"])
+    assert checked.exit_code == 0, checked.output
+    check_report = json.loads(checked.stdout)
+    assert set(check_report) == expected_keys
+    assert check_report["status"] == "up_to_date"
+    assert check_report["project"] == str(project)
+    assert check_report["changed_paths"] == []
+
+    state_path = project / ".project-forge.yml"
+    state = load_state(project).model_copy(update={"template_digest": f"sha256:{'0' * 64}"})
+    state_path.write_text(dump_state(state), encoding="utf-8")
+    commit_project(project, "old identity")
+    applied = runner.invoke(app, ["update", str(project), "--json"])
+
+    assert applied.exit_code == 0, applied.output
+    apply_report = json.loads(applied.stdout)
+    assert set(apply_report) == expected_keys
+    assert apply_report["status"] == "updated"
+    assert apply_report["identity_changed"] is True
+    assert apply_report["changed_paths"] == sorted(apply_report["changed_paths"])
+    assert ".project-forge.yml" in apply_report["changed_paths"]
+
+
+def test_update_json_runtime_error_keeps_machine_readable_shape(tmp_path: Path) -> None:
+    project = tmp_path / "json-error"
+    initialize_project(ProjectState.create("JSON Error"), project)
+    commit_project(project)
+    (project / "notes.md").write_text("dirty\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["update", str(project), "--json"])
+
+    assert result.exit_code == 2
+    report = json.loads(result.stdout)
+    assert report["status"] == "error"
+    assert report["project"] == str(project)
+    assert report["changed_paths"] == []
+    assert report["conflict_paths"] == []
+    assert report["rejection_paths"] == []
+    assert report["breaking_changes"] == []
+    assert "uncommitted or untracked" in report["message"]
+
+
 def test_update_check_detects_same_version_template_digest_without_mutation(
     tmp_path: Path,
 ) -> None:
@@ -632,36 +914,70 @@ def test_update_check_detects_same_version_template_digest_without_mutation(
     assert load_state(project).template_digest == current_template_digest()
 
 
-def test_same_version_update_migrates_legacy_state_schema_and_missing_digest(
+@pytest.mark.parametrize("schema_version", [1, 2])
+def test_update_migrates_legacy_state_and_hard_switches_app_command(
+    schema_version: int,
     tmp_path: Path,
 ) -> None:
     project = tmp_path / "legacy-state"
     initialize_project(ProjectState.create("Legacy State"), project)
     state_path = project / ".project-forge.yml"
     legacy_lines = [
-        "schema_version: 1" if line.startswith("schema_version:") else line
+        f"schema_version: {schema_version}" if line.startswith("schema_version:") else line
         for line in state_path.read_text(encoding="utf-8").splitlines()
-        if not line.startswith("template_digest:")
+        if not line.startswith(("template_digest:", "command_name:"))
+    ]
+    legacy_lines = [
+        "template_version: 0.2.0" if line.startswith("template_version:") else line
+        for line in legacy_lines
     ]
     state_path.write_text("\n".join(legacy_lines) + "\n", encoding="utf-8")
+    extracted = tmp_path / f"legacy-baseline-{schema_version}"
+    extracted.mkdir()
+    renderer._extract_baseline(project, extracted)
+    relative = Path("backend/pyproject.toml")
+    for root in (project, extracted):
+        path = root / relative
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                '"legacy-state" = "app.cli:main"',
+                'app = "app.cli:main"',
+            ),
+            encoding="utf-8",
+        )
+    renderer._write_baseline(extracted, project)
+    user_script = project / "deploy.sh"
+    user_script.write_text("uv run app migrate up\n", encoding="utf-8")
     commit_project(project)
 
     legacy = load_state(project)
-    assert legacy.schema_version == 1
+    assert legacy.schema_version == schema_version
     assert legacy.template_version == "0.2.0"
     assert legacy.template_digest is None
+    assert legacy.command_name == "app"
 
-    preview = runner.invoke(app, ["update", str(project), "--check"])
+    preview = runner.invoke(app, ["update", str(project), "--check", "--json"])
     assert preview.exit_code == 1
-    assert load_state(project).schema_version == 1
+    report = json.loads(preview.stdout)
+    assert report["status"] == "update_available"
+    assert report["breaking_changes"] == [
+        {"code": "generated_command_renamed", "from": "app", "to": "legacy-state"}
+    ]
+    assert report["changed_paths"] == sorted(report["changed_paths"])
+    assert load_state(project).schema_version == schema_version
     assert load_state(project).template_digest is None
 
     applied = runner.invoke(app, ["update", str(project)])
     assert applied.exit_code == 0, applied.output
     upgraded = load_state(project)
-    assert upgraded.schema_version == 2
-    assert upgraded.template_version == "0.2.0"
+    assert upgraded.schema_version == 3
+    assert upgraded.template_version == "0.3.0"
     assert upgraded.template_digest == current_template_digest()
+    assert upgraded.command_name == "legacy-state"
+    backend_project = (project / relative).read_text(encoding="utf-8")
+    assert '"legacy-state" = "app.cli:main"' in backend_project
+    assert '\napp = "app.cli:main"' not in backend_project
+    assert user_script.read_text(encoding="utf-8") == "uv run app migrate up\n"
 
 
 @pytest.mark.parametrize("check", [False, True])

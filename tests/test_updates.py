@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import io
+import json
+import os
 import stat
 import subprocess
+import sys
 import tarfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -108,6 +111,219 @@ def test_junction_detection_supports_modern_and_python_311_paths(
     assert renderer._is_junction(LegacyWindowsPath()) is True  # type: ignore[arg-type]
 
 
+def test_baseline_is_byte_deterministic_across_file_mtimes(tmp_path: Path) -> None:
+    state = ProjectState.create("Deterministic", profile=Profile.BACKEND, sample=False)
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    renderer.render_fresh(state, first)
+    renderer.render_fresh(state, second)
+    for path in second.rglob("*"):
+        if path.is_file():
+            os.utime(path, (2_000_000_000, 2_000_000_000))
+
+    first_payload = renderer._baseline_bytes(first)
+    assert first_payload == renderer._baseline_bytes(second)
+    assert first_payload[:2] == b"\x1f\x8b"
+    assert first_payload[4:8] == b"\x00\x00\x00\x00"
+    with tarfile.open(fileobj=io.BytesIO(first_payload), mode="r:gz") as bundle:
+        members = bundle.getmembers()
+    assert [member.name for member in members] == sorted(member.name for member in members)
+    assert all(
+        member.mtime == member.uid == member.gid == 0
+        and member.uname == member.gname == ""
+        and member.mode in {0o644, 0o755}
+        for member in members
+    )
+
+
+@pytest.mark.compat
+def test_noop_update_does_not_write_and_keeps_git_clean(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = tmp_path / "project"
+    state = ProjectState.create("Noop", profile=Profile.BACKEND, sample=False)
+    initialize_project(state, project)
+    commit_all(project, "initial")
+    baseline_before = (project / ".project-forge/baseline.tar.gz").read_bytes()
+
+    def reject_write(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("an up-to-date project must not write any file")
+
+    monkeypatch.setattr(renderer, "_atomic_write_bytes", reject_write)
+    result = apply_controlled_update(project, state, state)
+
+    assert result.status == "up_to_date"
+    assert result.changed_paths == ()
+    assert (project / ".project-forge/baseline.tar.gz").read_bytes() == baseline_before
+    status = subprocess.run(
+        ["git", "-C", str(project), "status", "--porcelain"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert status.stdout == ""
+
+
+@pytest.mark.parametrize(
+    "limit",
+    ["compressed", "members", "member", "uncompressed"],
+)
+def test_baseline_resource_limits_fail_before_extraction(
+    limit: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = tmp_path / "project"
+    metadata = project / ".project-forge"
+    metadata.mkdir(parents=True)
+    archive = metadata / "baseline.tar.gz"
+    if limit == "compressed":
+        monkeypatch.setattr(renderer, "MAX_BASELINE_COMPRESSED_BYTES", 8)
+        archive.write_bytes(b"not-gzip-and-too-large")
+    else:
+        if limit == "members":
+            monkeypatch.setattr(renderer, "MAX_BASELINE_MEMBERS", 1)
+            payloads = [("first", b"a"), ("second", b"b")]
+        elif limit == "member":
+            monkeypatch.setattr(renderer, "MAX_BASELINE_MEMBER_BYTES", 2)
+            payloads = [("large", b"abc")]
+        else:
+            monkeypatch.setattr(renderer, "MAX_BASELINE_UNCOMPRESSED_BYTES", 4)
+            payloads = [("first", b"abc"), ("second", b"def")]
+        with tarfile.open(archive, "w:gz") as bundle:
+            for name, payload in payloads:
+                member = tarfile.TarInfo(name)
+                member.size = len(payload)
+                bundle.addfile(member, io.BytesIO(payload))
+
+    destination = tmp_path / "extracted"
+    with pytest.raises(renderer.ProjectForgeError, match="exceeds"):
+        renderer._extract_baseline(project, destination)
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize(
+    "limit",
+    ["compressed", "members", "member", "uncompressed"],
+)
+def test_baseline_resource_limits_fail_before_archive_write(
+    limit: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    rendered = tmp_path / "rendered"
+    rendered.mkdir()
+    (rendered / "first").write_bytes(b"abc")
+    if limit in {"members", "uncompressed"}:
+        (rendered / "second").write_bytes(b"def")
+    if limit == "compressed":
+        monkeypatch.setattr(renderer, "MAX_BASELINE_COMPRESSED_BYTES", 1)
+    elif limit == "members":
+        monkeypatch.setattr(renderer, "MAX_BASELINE_MEMBERS", 1)
+    elif limit == "member":
+        monkeypatch.setattr(renderer, "MAX_BASELINE_MEMBER_BYTES", 2)
+    else:
+        monkeypatch.setattr(renderer, "MAX_BASELINE_UNCOMPRESSED_BYTES", 4)
+
+    with pytest.raises(renderer.ProjectForgeError, match="exceeds"):
+        renderer._baseline_bytes(rendered)
+
+
+def test_junction_target_and_rejection_use_safe_root_diagnostic(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = tmp_path / "project"
+    state = ProjectState.create("Junction Target", profile=Profile.BACKEND, sample=False)
+    initialize_project(state, project)
+    commit_all(project, "initial")
+    target = project / "README.md"
+    rejection = project / "README.md.rej"
+    monkeypatch.setattr(
+        renderer,
+        "_is_junction",
+        lambda path: path in {target, rejection},
+    )
+
+    result = apply_controlled_update(project, state, state)
+
+    assert result.status == "conflicts"
+    assert result.conflict_paths == (Path("README.md"),)
+    assert len(result.rejection_paths) == 1
+    assert result.rejection_paths[0].parent == Path(".")
+    assert result.rejection_paths[0].name.startswith("project-forge-README.md-")
+
+
+def test_metadata_junction_is_rejected_before_update(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = tmp_path / "project"
+    state = ProjectState.create("Metadata Junction", profile=Profile.BACKEND, sample=False)
+    initialize_project(state, project)
+    commit_all(project, "initial")
+    metadata = project / ".project-forge"
+    monkeypatch.setattr(renderer, "_is_junction", lambda path: path == metadata)
+
+    with pytest.raises(renderer.ProjectForgeError, match="junction"):
+        apply_controlled_update(project, state, state)
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [Path(".project-forge.yml"), Path(".project-forge/baseline.tar.gz")],
+    ids=("state", "baseline"),
+)
+def test_metadata_file_symlink_is_rejected_without_touching_external_target(
+    relative: Path, tmp_path: Path
+) -> None:
+    project = tmp_path / "project"
+    state = ProjectState.create("Metadata Link", profile=Profile.BACKEND, sample=False)
+    initialize_project(state, project)
+    target = project / relative
+    external = tmp_path / f"external-{target.name}"
+    external.write_bytes(target.read_bytes())
+    target.unlink()
+    try:
+        target.symlink_to(external)
+    except OSError as error:  # pragma: no cover - platform-specific permission policy
+        pytest.skip(f"symlinks are unavailable: {error}")
+    commit_all(project, "linked metadata")
+    external_before = external.read_bytes()
+
+    with pytest.raises(renderer.ProjectForgeError, match=r"symlink|real directories"):
+        apply_controlled_update(project, state, state)
+
+    assert target.is_symlink()
+    assert external.read_bytes() == external_before
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires a real Windows junction")
+def test_real_windows_junction_is_rejected(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    state = ProjectState.create("Real Junction", profile=Profile.BACKEND, sample=False)
+    initialize_project(state, project)
+    commit_all(project, "initial")
+    services = project / "backend/src/app/services"
+    external = tmp_path / "outside-services"
+    services.rename(external)
+    subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(services), str(external)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    status = subprocess.run(
+        ["git", "-C", str(project), "status", "--porcelain"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if status.stdout:
+        commit_all(project, "real junction")
+
+    result = apply_controlled_update(project, state, state)
+
+    assert result.status == "conflicts"
+    assert result.rejection_paths
+    assert all(path.parent == Path(".") for path in result.rejection_paths)
+
+
+@pytest.mark.compat
 def test_monotonic_component_add_preserves_user_files(tmp_path: Path) -> None:
     project = tmp_path / "project"
     initial = ProjectState.create("Backend App", profile=Profile.BACKEND, sample=False)
@@ -117,9 +333,10 @@ def test_monotonic_component_add_preserves_user_files(tmp_path: Path) -> None:
     commit_all(project, "initial")
 
     expanded = initial.model_copy(update={"profile": Profile.FULLSTACK})
-    conflicts = apply_controlled_update(project, expanded)
+    result = apply_controlled_update(project, expanded)
 
-    assert conflicts == []
+    assert result.status == "updated"
+    assert result.rejection_paths == ()
     assert (project / "frontend/package.json").is_file()
     assert user_file.read_text(encoding="utf-8") == "user-owned\n"
 
@@ -228,7 +445,7 @@ type DbPool = AsyncConnectionPool[DbConnection]
                 bundle.add(path, arcname=path.relative_to(extracted).as_posix())
     user_file = project / "notes.md"
     user_file.write_text("preserve me\n", encoding="utf-8")
-    commit_all(project, "legacy 0.2.0 runtime contracts")
+    commit_all(project, "legacy runtime contracts")
 
     result = CliRunner().invoke(app, ["update", str(project)])
 
@@ -243,7 +460,7 @@ type DbPool = AsyncConnectionPool[DbConnection]
     assert (project / frontend_dockerfile_path).read_text(encoding="utf-8").startswith(
         "FROM node:24-bookworm-slim"
     )
-    assert load_state(project).template_version == "0.2.0"
+    assert load_state(project).template_version == "0.3.0"
     assert user_file.read_text(encoding="utf-8") == "preserve me\n"
 
     updated_baseline = tmp_path / "updated-baseline"
@@ -289,6 +506,15 @@ def test_double_modified_file_produces_rejection_without_overwrite(tmp_path: Pat
     assert state_path.read_bytes() == state_before
     assert archive.read_bytes() == baseline_before
 
+    machine_preview = CliRunner().invoke(
+        app, ["update", str(project), "--check", "--json"]
+    )
+    assert machine_preview.exit_code == 3
+    report = json.loads(machine_preview.stdout)
+    assert report["status"] == "conflicts"
+    assert report["conflict_paths"] == ["README.md"]
+    assert report["rejection_paths"] == []
+
     result = CliRunner().invoke(app, ["update", str(project)])
 
     assert result.exit_code == 3
@@ -333,9 +559,10 @@ def test_conflict_preflight_does_not_apply_other_planned_changes(tmp_path: Path)
     state_file = project / ".project-forge.yml"
     state_before = state_file.read_bytes()
 
-    conflicts = apply_controlled_update(project, state)
+    result = apply_controlled_update(project, state)
 
-    assert conflicts == [project / "README.md.rej"]
+    assert result.status == "conflicts"
+    assert result.rejection_paths == (Path("README.md.rej"),)
     assert project_readme.read_text(encoding="utf-8").startswith("# User title")
     assert project_agents.read_text(encoding="utf-8") == old_agents
     assert archive.read_bytes() == baseline_before
@@ -371,7 +598,7 @@ def test_update_applies_template_mode_only_change(tmp_path: Path) -> None:
                 bundle.add(path, arcname=path.relative_to(extracted).as_posix())
     commit_all(project, "legacy executable mode")
 
-    assert apply_controlled_update(project, state) == []
+    assert apply_controlled_update(project, state).status == "updated"
     assert stat.S_IMODE(target.stat().st_mode) == expected_mode
 
 
@@ -421,7 +648,7 @@ def test_update_three_way_merges_content_and_compatible_modes(
 
     monkeypatch.setattr(renderer, "render_fresh", render_changed)
 
-    assert apply_controlled_update(project, state) == []
+    assert apply_controlled_update(project, state).status == "updated"
     merged = target.read_bytes()
     assert b"project addition" in merged
     assert b"template addition" in merged
@@ -469,10 +696,13 @@ def test_update_mode_conflict_writes_only_rejection(
 
     monkeypatch.setattr(renderer, "render_fresh", render_changed)
 
-    conflicts = apply_controlled_update(project, state)
+    result = apply_controlled_update(project, state)
 
-    assert conflicts == [project / "AGENTS.md.rej"]
-    assert "file mode changed differently" in conflicts[0].read_text(encoding="utf-8")
+    assert result.status == "conflicts"
+    assert result.rejection_paths == (Path("AGENTS.md.rej"),)
+    assert "file mode changed differently" in (project / result.rejection_paths[0]).read_text(
+        encoding="utf-8"
+    )
     assert target.read_bytes() == current_content
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
     assert readme.read_bytes() == readme_before
@@ -499,7 +729,7 @@ def test_update_does_not_scan_user_owned_project_trees(
         return original(root)
 
     monkeypatch.setattr(renderer, "_managed_files", reject_project_scan)
-    assert apply_controlled_update(project, state) == []
+    assert apply_controlled_update(project, state).status == "up_to_date"
 
 
 def test_update_rejects_managed_file_symlink_without_touching_target(tmp_path: Path) -> None:
@@ -516,12 +746,15 @@ def test_update_rejects_managed_file_symlink_without_touching_target(tmp_path: P
         pytest.skip(f"symlinks are unavailable: {error}")
     commit_all(project, "managed file symlink")
 
-    conflicts = apply_controlled_update(project, state)
+    result = apply_controlled_update(project, state)
 
-    assert conflicts == [project / "README.md.rej"]
+    assert result.status == "conflicts"
+    assert result.rejection_paths == (Path("README.md.rej"),)
     assert target.is_symlink()
     assert external.read_text(encoding="utf-8") == "outside must not change\n"
-    assert "managed paths must be regular files" in conflicts[0].read_text(encoding="utf-8")
+    assert "managed paths must be regular files" in (
+        project / result.rejection_paths[0]
+    ).read_text(encoding="utf-8")
 
 
 def test_update_writes_parent_symlink_conflicts_inside_project(tmp_path: Path) -> None:
@@ -539,10 +772,14 @@ def test_update_writes_parent_symlink_conflicts_inside_project(tmp_path: Path) -
     sentinel.write_text("outside must not change\n", encoding="utf-8")
     commit_all(project, "managed parent symlink")
 
-    conflicts = apply_controlled_update(project, state)
+    result = apply_controlled_update(project, state)
 
-    assert conflicts
-    assert all(conflict.parent == project and conflict.suffix == ".rej" for conflict in conflicts)
+    assert result.status == "conflicts"
+    assert result.rejection_paths
+    assert all(
+        path.parent == Path(".") and path.suffix == ".rej"
+        for path in result.rejection_paths
+    )
     assert sentinel.read_text(encoding="utf-8") == "outside must not change\n"
 
 
@@ -584,10 +821,10 @@ def test_update_staging_failure_leaves_project_unchanged(
     state_before = state_path.read_bytes()
     baseline_before = baseline_path.read_bytes()
 
-    def fail_baseline(_rendered: Path, _project_dir: Path) -> None:
+    def fail_baseline(_rendered: Path) -> bytes:
         raise OSError("injected baseline staging failure")
 
-    monkeypatch.setattr(renderer, "_write_baseline", fail_baseline)
+    monkeypatch.setattr(renderer, "_baseline_bytes", fail_baseline)
     expanded = initial.model_copy(update={"profile": Profile.FULLSTACK})
 
     with pytest.raises(OSError, match="injected baseline"):
@@ -615,7 +852,13 @@ def test_update_io_failure_rolls_back_files_state_and_baseline(
     calls = 0
     failed = False
 
-    def fail_once(path: Path, content: bytes, mode: int) -> None:
+    def fail_once(
+        path: Path,
+        content: bytes,
+        mode: int,
+        *,
+        project_dir: Path | None = None,
+    ) -> None:
         nonlocal calls, failed
         calls += 1
         should_fail = (
@@ -626,7 +869,7 @@ def test_update_io_failure_rolls_back_files_state_and_baseline(
         if should_fail and not failed:
             failed = True
             raise OSError(f"injected {failure_point}")
-        original_write(path, content, mode)
+        original_write(path, content, mode, project_dir=project_dir)
 
     monkeypatch.setattr(renderer, "_atomic_write_bytes", fail_once)
     expanded = initial.model_copy(update={"profile": Profile.FULLSTACK})

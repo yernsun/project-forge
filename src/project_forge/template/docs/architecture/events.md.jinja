@@ -21,9 +21,9 @@ forever.
 Use operator commands before and after remediation:
 
 ```bash
-app events status --json
-app events retry-failed --limit 100 --dry-run
-app events retry-failed --limit 100
+{{ command_name }} events status --json
+{{ command_name }} events retry-failed --limit 100 --dry-run
+{{ command_name }} events retry-failed --limit 100
 ```
 
 The retry command is intentionally bounded and explicit. Fix the dependency, schema, or handler

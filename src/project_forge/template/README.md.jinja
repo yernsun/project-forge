@@ -90,9 +90,9 @@ In a backend terminal:
 cp backend/.env.example backend/.env
 cd backend
 uv sync --frozen --all-groups{% if auth %} --extra auth{% endif %}{% if evented %} --extra evented{% endif %}
-uv run app migrate status
-uv run app migrate up
-uv run app config check --json
+uv run {{ command_name }} migrate status
+uv run {{ command_name }} migrate up
+uv run {{ command_name }} config check --json
 uv run fastapi dev
 ```
 
@@ -102,8 +102,8 @@ Authentication maintenance:
 
 ```bash
 cd backend
-uv run app auth purge-expired --dry-run
-uv run app auth purge-expired
+uv run {{ command_name }} auth purge-expired --dry-run
+uv run {{ command_name }} auth purge-expired
 ```
 {% endif %}{% if evented %}
 Run the outbox relay in another backend terminal:
@@ -111,8 +111,8 @@ Run the outbox relay in another backend terminal:
 ```bash
 cd backend
 uv run python -m app.events.worker
-uv run app events status --json
-uv run app events retry-failed --limit 100 --dry-run
+uv run {{ command_name }} events status --json
+uv run {{ command_name }} events retry-failed --limit 100 --dry-run
 ```
 
 The relay reclaims stale Redis pending messages and parks PostgreSQL outbox rows after the bounded
@@ -206,7 +206,7 @@ curl http://localhost:8000/health/ready
 ```
 
 Every API response includes `X-Request-ID`; use it to correlate a sanitized public error with the
-structured API log. `app config check --json` reports only non-secret effective settings.
+structured API log. `{{ command_name }} config check --json` reports only non-secret effective settings.
 
 {% if sample and not auth %}Create and query a sample item:
 
@@ -264,15 +264,18 @@ Run these commands only with a clean Git worktree:
 project-forge features .
 project-forge doctor .
 project-forge update --check .
+project-forge update . --check --json
 project-forge update .
+project-forge configure --command-name {{ command_name }} -C .
 ```
 
 Project Forge supports additive `add`/`enable` operations and does not remove capabilities. Update
 conflicts preserve all managed files and create `.rej` files for manual resolution.
 
-State schema 2 stores a deterministic template digest. After reinstalling the tool source,
+The generated backend command is `{{ command_name }}`; the internal Python package remains `app`.
+State schema 3 stores that command and a deterministic template digest. After reinstalling the tool source,
 `update --check` performs a real dry render and three-way comparison, so it detects refreshed
-template content even when both sides still report `0.2.0`:
+template content even when the public version is unchanged:
 
 ```bash
 uv tool upgrade --reinstall project-forge

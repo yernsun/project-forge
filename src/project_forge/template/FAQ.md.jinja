@@ -278,8 +278,8 @@ before credential verification. Inspect or remove expired buckets with:
 
 ```bash
 cd backend
-uv run app auth purge-expired --dry-run
-uv run app auth purge-expired
+uv run {{ command_name }} auth purge-expired --dry-run
+uv run {{ command_name }} auth purge-expired
 ```
 
 Do not raise production limits merely to hide a broken proxy/client-address configuration.
@@ -294,7 +294,7 @@ Use redacted output; never print secrets or complete cookies:
 docker compose ls
 docker compose --env-file .env.dev -f docker-compose.dev.yml ps
 docker compose --env-file .env.dev -f docker-compose.dev.yml config --quiet
-docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T api app config check --json
+docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T api {{ command_name }} config check --json
 docker compose --env-file .env.dev -f docker-compose.dev.yml exec -T api printenv \
   APP_ENV APP_ALLOWED_ORIGINS APP_SESSION_COOKIE_SECURE \
   APP_SIGNUP_ENABLED FORWARDED_ALLOW_IPS
@@ -304,7 +304,7 @@ python harness/check.py
 ```
 
 Every API response includes `X-Request-ID`. When a public response intentionally omits sensitive
-validation details, use that identifier to find the matching structured API log. `app config check
+validation details, use that identifier to find the matching structured API log. `{{ command_name }} config check
 --json` reports only a redacted effective configuration summary; it never prints database URLs,
 passwords, cookies, session/CSRF tokens, or the rate-limit secret.
 

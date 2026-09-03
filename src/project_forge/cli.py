@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from collections.abc import Callable
@@ -20,11 +21,14 @@ from project_forge.config import (
     Profile,
     ProjectState,
     load_state,
+    normalize_command_name,
 )
+from project_forge.identity import current_template_digest
 from project_forge.renderer import (
     BASELINE_FILE,
     METADATA_DIR,
     ProjectForgeError,
+    UpdateResult,
     apply_controlled_update,
     copy_skill,
     git_worktree_status,
@@ -263,15 +267,39 @@ def _fail(error: Exception) -> None:
     raise typer.Exit(code=2)
 
 
-def _apply(project_dir: Path, state: ProjectState) -> None:
-    state = state.with_current_template_identity()
-    conflicts = apply_controlled_update(project_dir, state)
-    if conflicts:
+def _absolute(path: Path) -> Path:
+    return Path(os.path.abspath(path))
+
+
+def _show_breaking_changes(result: UpdateResult) -> None:
+    for change in result.breaking_changes:
+        typer.secho(
+            f"Breaking change: generated command {change.before} → {change.after}; "
+            "user-owned scripts are not rewritten.",
+            fg="yellow",
+        )
+
+
+def _apply(
+    project_dir: Path,
+    current_state: ProjectState,
+    target_state: ProjectState | None = None,
+) -> UpdateResult:
+    target_state = target_state or current_state.with_current_template_identity()
+    result = apply_controlled_update(project_dir, target_state, current_state)
+    _show_breaking_changes(result)
+    if result.status == "conflicts":
         typer.secho("Update stopped with conflicts; current files were preserved:", fg="yellow")
-        for conflict in conflicts:
-            typer.echo(f"  {conflict}")
+        for rejection in result.rejection_paths:
+            typer.echo(f"  {project_dir / rejection}")
         raise typer.Exit(code=3)
-    typer.secho(f"Updated {project_dir} to template {state.template_version}", fg="green")
+    if result.status == "up_to_date":
+        typer.echo("up to date")
+    else:
+        typer.secho(
+            f"Updated {project_dir} to template {target_state.template_version}", fg="green"
+        )
+    return result
 
 
 def _template_versions(state: ProjectState) -> tuple[Version, Version]:
@@ -293,6 +321,11 @@ def init_project(
     destination: Path = typer.Argument(..., help="New project directory"),
     name: str | None = typer.Option(None, "--name", help="Human-facing project name"),
     slug: str | None = typer.Option(None, "--slug", help="ASCII project slug"),
+    command_name: str | None = typer.Option(
+        None,
+        "--command-name",
+        help="Generated backend console command (default: project slug)",
+    ),
     profile: Profile = typer.Option(Profile.FULLSTACK, "--profile"),
     auth: bool = typer.Option(False, "--auth/--no-auth"),
     evented: bool = typer.Option(False, "--evented/--no-evented"),
@@ -310,6 +343,7 @@ def init_project(
         state = ProjectState.create(
             project_name,
             project_slug=slug,
+            command_name=command_name,
             profile=profile,
             auth=auth,
             evented=evented,
@@ -319,7 +353,7 @@ def init_project(
         initialize_project(state, destination, initialize_git=initialize_git)
     except (ProjectForgeError, ValidationError, ValueError, OSError) as error:
         _fail(error)
-    typer.secho(f"Created {state.profile.value} project at {destination.resolve()}", fg="green")
+    typer.secho(f"Created {state.profile.value} project at {_absolute(destination)}", fg="green")
     if initialize_git:
         typer.echo("Commit the generated baseline before running add, enable, or update.")
 
@@ -385,7 +419,7 @@ def add_component(
 ) -> None:
     """Monotonically add frontend or backend to an existing project."""
     try:
-        root = project_dir.resolve()
+        root = _absolute(project_dir)
         state = load_state(root)
         _template_versions(state)
         if (
@@ -395,13 +429,7 @@ def add_component(
             and state.profile is Profile.BACKEND)
         ):
             state = state.model_copy(update={"profile": Profile.FULLSTACK})
-        elif (component is Component.BACKEND and state.has_backend) or (
-            component is Component.FRONTEND and state.has_frontend
-        ):
-            typer.echo(f"{component.value} is already enabled")
-            return
-        state = state.model_copy(update={"template_version": __version__})
-        _apply(root, state)
+        _apply(root, state, state.with_current_template_identity())
     except (ProjectForgeError, ValidationError, ValueError, OSError) as error:
         _fail(error)
 
@@ -413,17 +441,35 @@ def enable_feature(
 ) -> None:
     """Monotonically enable auth, evented processing, or the sample slice."""
     try:
-        root = project_dir.resolve()
+        root = _absolute(project_dir)
         state = load_state(root)
         _template_versions(state)
-        if getattr(state, feature.value):
-            typer.echo(f"{feature.value} is already enabled")
-            return
-        state = state.model_copy(
-            update={feature.value: True, "template_version": __version__}
-        )
+        if not getattr(state, feature.value):
+            state = state.model_copy(update={feature.value: True})
         state = ProjectState.model_validate(state.model_dump())
-        _apply(root, state)
+        _apply(root, state, state.with_current_template_identity())
+    except (ProjectForgeError, ValidationError, ValueError, OSError) as error:
+        _fail(error)
+
+
+@app.command("configure")
+def configure_project(
+    command_name: str = typer.Option(
+        ...,
+        "--command-name",
+        help="Generated backend console command; normalized to lowercase hyphen form",
+    ),
+    project_dir: Path = typer.Option(Path("."), "--project-dir", "-C"),
+) -> None:
+    """Change persisted generator configuration through a controlled update."""
+
+    try:
+        root = _absolute(project_dir)
+        state = load_state(root)
+        _template_versions(state)
+        normalized = normalize_command_name(command_name)
+        target_state = state.with_current_template_identity(command_name=normalized)
+        _apply(root, state, target_state)
     except (ProjectForgeError, ValidationError, ValueError, OSError) as error:
         _fail(error)
 
@@ -439,31 +485,61 @@ def update_project(
             "do not check a remote repository"
         ),
     ),
+    as_json: bool = typer.Option(False, "--json", help="Emit a stable machine-readable result"),
 ) -> None:
     """Apply the packaged template with clean-Git and .rej conflict safeguards."""
     try:
-        root = project_dir.resolve()
+        root = _absolute(project_dir)
         state = load_state(root)
         _template_versions(state)
         target_state = state.with_current_template_identity()
         if check:
-            preview = preview_controlled_update(root, state, target_state)
-            if preview.conflict_paths:
+            result = preview_controlled_update(root, state, target_state)
+            if as_json:
+                typer.echo(json.dumps(result.as_dict(), ensure_ascii=False, indent=2))
+            else:
+                _show_breaking_changes(result)
+            if result.status == "conflicts":
+                if as_json:
+                    raise typer.Exit(code=3)
                 typer.echo(
-                    f"update conflicts ({len(preview.conflict_paths)} managed paths); "
+                    f"update conflicts ({len(result.conflict_paths)} managed paths); "
                     "run update to write .rej diagnostics"
                 )
                 raise typer.Exit(code=3)
-            if preview.update_available:
-                typer.echo(f"update available ({len(preview.changed_paths)} managed paths)")
+            if result.status == "update_available":
+                if not as_json:
+                    typer.echo(f"update available ({len(result.changed_paths)} paths)")
                 raise typer.Exit(code=1)
-            typer.echo("up to date")
+            if not as_json:
+                typer.echo("up to date")
             return
-        _apply(root, target_state)
+        if as_json:
+            result = apply_controlled_update(root, target_state, state)
+            typer.echo(json.dumps(result.as_dict(), ensure_ascii=False, indent=2))
+            if result.status == "conflicts":
+                raise typer.Exit(code=3)
+        else:
+            _apply(root, state, target_state)
     except typer.Exit:
         raise
     except (ProjectForgeError, ValidationError, ValueError, OSError) as error:
-        _fail(error)
+        if not as_json:
+            _fail(error)
+        report = {
+            "status": "error",
+            "project": str(_absolute(project_dir)),
+            "target_template_version": __version__,
+            "target_template_digest": current_template_digest(),
+            "identity_changed": False,
+            "changed_paths": [],
+            "conflict_paths": [],
+            "rejection_paths": [],
+            "breaking_changes": [],
+            "message": str(error),
+        }
+        typer.echo(json.dumps(report, ensure_ascii=False, indent=2))
+        raise typer.Exit(code=2) from error
 
 
 @app.command("install-skill")

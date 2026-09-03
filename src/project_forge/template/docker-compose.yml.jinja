@@ -40,7 +40,7 @@ services:
       APP_SIGNUP_ENABLED: ${APP_SIGNUP_ENABLED:-false}
       FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:?set trusted gateway and proxy IPs or CIDRs; never use *}
 {% endif %}{% if evented %}      REDIS_URL: redis://redis:6379/0
-{% endif %}    command: ["app", "migrate", "up"]
+{% endif %}    command: ["{{ command_name }}", "migrate", "up"]
     depends_on:
       db:
         condition: service_healthy

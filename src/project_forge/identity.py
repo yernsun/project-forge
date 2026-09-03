@@ -4,7 +4,7 @@ import hashlib
 from functools import lru_cache
 from pathlib import Path
 
-CURRENT_STATE_SCHEMA_VERSION = 2
+CURRENT_STATE_SCHEMA_VERSION = 3
 TEMPLATE_DIGEST_PREFIX = "sha256:"
 
 

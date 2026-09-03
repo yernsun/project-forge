@@ -19,7 +19,7 @@ successful login upgrades hashes whose work factor is stale.
   limiting (429).
 - Every response includes `X-Request-ID`. Validation and access logs are structured and correlated
   by that ID, but never include request bodies, passwords, cookies, session/CSRF tokens, or secrets.
-  `app config check --json` provides the redacted effective configuration needed for diagnosis.
+  `{{ command_name }} config check --json` provides the redacted effective configuration needed for diagnosis.
 
 Development cookies are named `<project-slug>-session` and `<project-slug>-csrf`. Secure deployments
 use host-only `__Host-<project-slug>-session` and `__Host-<project-slug>-csrf` cookies with `Secure`,
@@ -36,8 +36,8 @@ client bucket (5 attempts per 3600 seconds). Subjects are HMAC-SHA-256 pseudonym
 dedicated Unit of Work that commits before the credential transaction, so a rejected login cannot
 roll its attempt back. Login consumes the client bucket first and stops there when it is already
 limited, preventing rotated email addresses from creating unbounded combined-bucket rows. Run
-`app auth purge-expired` periodically to remove expired sessions and limiter windows.
-Use `app auth purge-expired --dry-run` to inspect counts first. PostgreSQL integration tests use the
+`{{ command_name }} auth purge-expired` periodically to remove expired sessions and limiter windows.
+Use `{{ command_name }} auth purge-expired --dry-run` to inspect counts first. PostgreSQL integration tests use the
 shared `TEST_DATABASE_URL` convention and must point to a dedicated test database. The lifecycle
 test that truncates shared tables also requires `PROJECT_FORGE_DESTRUCTIVE_PG_TESTS=1`; never set
 that opt-in for a database containing data you need.

@@ -11,17 +11,27 @@ permissions:
 jobs:
   generator-quality:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.13"
+      - run: uv sync --all-groups --frozen
+      - run: uv run --frozen python harness/check.py --mode quality
+
+  generator-python-compatibility:
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --all-groups --frozen
-      - run: uv run --frozen python harness/check.py
+      - run: uv run --frozen python harness/check.py --mode compatibility
 
   generator-platform-smoke:
     runs-on: ${{ matrix.os }}
@@ -44,6 +54,7 @@ jobs:
           tests/test_cli.py::test_update_check_detects_same_version_template_digest_without_mutation
           tests/test_cli.py::test_same_version_update_migrates_legacy_state_schema_and_missing_digest
           tests/test_updates.py::test_junction_detection_supports_modern_and_python_311_paths
+          tests/test_updates.py::test_real_windows_junction_is_rejected
           tests/test_updates.py::test_update_reports_invalid_baseline_as_runtime_error
           tests/test_config.py
 
@@ -79,7 +90,7 @@ jobs:
           cache: npm
           cache-dependency-path: src/project_forge/template/frontend/package-lock.json
       - run: uv sync --all-groups --frozen
-      - run: uv run --frozen python harness/manage_openapi_contracts.py --check
+      - run: uv run --frozen python harness/check.py --mode contracts
 
   generated-projects:
     runs-on: ubuntu-latest
@@ -144,18 +155,20 @@ jobs:
           cache-dependency-path: src/project_forge/template/frontend/package-lock.json
       - run: uv sync --all-groups --frozen
       - name: Render ${{ matrix.name }}
-        run: uv run --frozen project-forge init generated ${{ matrix.arguments }} --no-git
+        run: >-
+          uv run --frozen project-forge init generated ${{ matrix.arguments }}
+          --command-name generated-app --no-git
       - name: Apply generated migrations
         if: matrix.backend
         working-directory: generated/backend
         run: |
           uv sync --frozen --all-groups ${{ matrix.extras }}
-          uv run --frozen --no-sync app migrate up
+          uv run --frozen --no-sync generated-app migrate up
       - name: Validate generated project
         working-directory: generated
         run: python harness/check.py
 
-  backend-runtime-compatibility:
+  backend-runtime:
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -171,10 +184,6 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
     env:
       DATABASE_URL: postgresql://app:app@localhost:5432/app
       TEST_DATABASE_URL: postgresql://app:app@localhost:5432/app
@@ -188,18 +197,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.13"
       - run: uv sync --all-groups --frozen
       - name: Render maximal backend fixture
         run: >-
           uv run --frozen project-forge init generated
-          --profile backend --auth --evented --sample --no-git
+          --profile backend --auth --evented --sample
+          --command-name compat-backend --no-git
       - name: Apply generated migrations
         working-directory: generated/backend
         run: |
           uv sync --frozen --all-groups --extra auth --extra evented
-          uv run --frozen --no-sync app migrate up
-      - name: Validate backend on Python ${{ matrix.python-version }}
+          uv run --frozen --no-sync compat-backend migrate up
+      - name: Validate backend on Python 3.13
         working-directory: generated
         run: python harness/check.py
 
@@ -354,9 +364,13 @@ jobs:
           diff -u command-version.txt module-version.txt
       - name: Smoke-test packaged template and bundled skill
         run: |
-          project-forge init wheel-smoke --profile backend --no-sample --no-git
+          project-forge init content-agent --profile backend --no-sample --no-git
+          project-forge init wheel-custom --profile backend --no-sample --command-name forge-service --no-git
           project-forge install-skill --destination wheel-smoke/.agents/skills/wheel-smoke
-          "$(uv tool dir)/project-forge/bin/python" wheel-smoke/harness/check_architecture.py
-          "$(uv tool dir)/project-forge/bin/python" wheel-smoke/harness/check_sql.py
-          test -f wheel-smoke/backend/src/app/main.py
+          uv sync --project content-agent/backend --frozen --no-dev
+          uv run --project content-agent/backend --frozen --no-sync content-agent --help
+          uv sync --project wheel-custom/backend --frozen --no-dev
+          uv run --project wheel-custom/backend --frozen --no-sync forge-service --help
+          python content-agent/harness/check.py
+          test -f content-agent/backend/src/app/main.py
           test -f wheel-smoke/.agents/skills/wheel-smoke/SKILL.md

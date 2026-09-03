@@ -42,7 +42,7 @@ services:
       APP_AUTH_RATE_LIMIT_SECRET: ${DEV_AUTH_RATE_LIMIT_SECRET:-development-only-rate-limit-secret-change-me}
       APP_SIGNUP_ENABLED: ${DEV_SIGNUP_ENABLED:-true}
 {% endif %}{% if evented %}      REDIS_URL: redis://redis:6379/0
-{% endif %}    command: ["app", "migrate", "up"]
+{% endif %}    command: ["{{ command_name }}", "migrate", "up"]
     depends_on:
       db:
         condition: service_healthy

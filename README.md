@@ -145,6 +145,7 @@ project-forge init DESTINATION [OPTIONS]
 |---|---|---|
 | `--name TEXT` | Directory name | Human-facing project name |
 | `--slug TEXT` | Slugified name | Lowercase ASCII filesystem/cookie/Compose slug |
+| `--command-name TEXT` | Project slug | Generated backend console command; normalized to lowercase hyphen form |
 | `--profile frontend\|backend\|fullstack` | `fullstack` | Components to generate |
 | `--auth / --no-auth` | Off | Enable PostgreSQL session authentication |
 | `--evented / --no-evented` | Off | Enable outbox and Redis Streams |
@@ -171,6 +172,12 @@ project-forge init ../billing-events \
   --profile backend \
   --evented \
   --no-sample
+
+# Display name/slug defaults to `content-agent`; an explicit command can differ
+project-forge init ../content-agent \
+  --name "Content Agent" \
+  --profile backend \
+  --command-name content-agent-worker
 
 # Minimal frontend for an existing API
 project-forge init ../operations-ui \
@@ -261,24 +268,48 @@ git status --short
 `auth` and `evented` cannot be enabled on a frontend-only project; add the backend first. User-owned
 files are preserved, while managed files are reconciled against the recorded baseline.
 
+## Configure generated commands
+
+New projects default the backend console command to the project slug, so `Content Agent` generates
+`content-agent`, while Python imports remain under `app` and FastAPI remains `app.main:app`. Change
+the console command through the same clean-Git, atomic update boundary:
+
+```bash
+project-forge configure --command-name content-agent-cli -C ../content-agent
+```
+
+`configure` also works before a backend exists: a frontend-only project persists the name and uses
+it when `project-forge add backend` is run later. It never rewrites user-owned scripts.
+
 ## Upgrade a generated project
 
 `update --check` renders and compares the project with the template bundled in the currently
-installed CLI. State schema 2 records a deterministic template digest, so refreshed template
-content is detected even when the public version remains `0.2.0`. The command never contacts GitHub
+installed CLI. State schema 3 records the command name and a deterministic template digest, so
+refreshed template content is detected even when the public version is unchanged. The command never contacts GitHub
 or another remote and never writes managed files, state, baseline, or `.rej` files:
 
 ```bash
 uv tool upgrade project-forge
 project-forge update --check ../customer-portal
+project-forge update --check --json ../customer-portal
 project-forge update ../customer-portal
 ```
+
+Schema v1/v2 backend projects report the intentional `app → <project-slug>` breaking change before
+updating. Running `update`, `add`, `enable`, or `configure` performs that hard switch without an
+`app` alias; user-owned scripts are left untouched. JSON results stably report status, project,
+target template identity, identity drift, sorted changed/conflict/rejection paths, and breaking
+changes while preserving exit codes 0/1/2/3.
 
 Updates require clean Git and use a two-phase, all-or-nothing process. If any managed file conflicts,
 all managed files, state, and baseline remain unchanged; only neighboring `.rej` files are written.
 Resolve a rejection by applying the intended change manually, removing the `.rej` file, committing
 the resolution, and rerunning `project-forge update`. Project Forge never invokes `git reset`,
 `git clean`, or force operations.
+
+Baselines are byte-deterministic and preserve normalized executable permissions. Unchanged updates
+write nothing. Archive extraction is bounded to 64 MiB compressed, 4,096 files, 16 MiB per file,
+and 128 MiB uncompressed; managed writes reject symbolic links and Windows junctions.
 
 ## Use the bundled Codex skill
 
@@ -331,9 +362,9 @@ failure recovery controls:
 
 ```bash
 cd backend
-uv run app config check --json
-uv run app events status --json
-uv run app events retry-failed --limit 100 --dry-run
+uv run content-agent config check --json
+uv run content-agent events status --json
+uv run content-agent events retry-failed --limit 100 --dry-run
 ```
 
 Every API response carries `X-Request-ID`; structured logs use the same value without recording
@@ -389,7 +420,7 @@ uv tool install --force --python 3.11 git+https://github.com/yernsun/project-for
 
 `update --check` intentionally does not query a remote repository. After reinstalling the tool, it
 uses the stored template digest plus an actual dry render/three-way comparison, so it can report a
-same-version `0.2.0` refresh. Run `project-forge update PATH` when the check reports a difference.
+same-version refresh. Run `project-forge update PATH` when the check reports a difference.
 The normal clean-Git and all-or-nothing conflict safeguards still apply.
 
 ### Managed evolution reports a dirty worktree
@@ -414,7 +445,9 @@ the support contract until a future Project Forge release explicitly adopts it a
 ```bash
 uv sync --all-groups
 uv run --frozen python harness/check.py
-uv run --frozen python harness/manage_openapi_contracts.py --check
+uv run --frozen python harness/check.py --mode quality
+uv run --frozen python harness/check.py --mode contracts
+uv run --frozen python harness/check.py --mode compatibility
 uv run --frozen pip-audit
 cd src/project_forge/template/frontend
 npm audit --audit-level=high
@@ -424,7 +457,7 @@ Root tests enforce branch coverage, generated strict harnesses enforce backend/f
 and CI adds macOS/Windows CLI smoke tests, Python 3.11–3.14, supported Node LTS lines, dependency
 audits, a non-TLS internal production-Compose readiness smoke, wheel isolation, and authenticated
 Compose E2E. Release tags are additionally checked against `pyproject.toml`; the release workflow
-builds checksums, an SBOM, and provenance while the public version remains `0.2.0`.
+builds checksums, an SBOM, and provenance for the `0.3.0` release.
 
 After an intentional API route or DTO change:
 

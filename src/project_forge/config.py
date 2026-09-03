@@ -13,6 +13,8 @@ from project_forge import __version__
 from project_forge.identity import CURRENT_STATE_SCHEMA_VERSION, current_template_digest
 
 _UNSAFE_PROJECT_NAME_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
+_COMMAND_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+MAX_COMMAND_NAME_LENGTH = 100
 
 
 def _reject_unsafe_project_name_characters(value: str) -> None:
@@ -52,6 +54,19 @@ def slugify(value: str) -> str:
     return normalized
 
 
+def normalize_command_name(value: str) -> str:
+    """Normalize and validate a generated console command name."""
+
+    normalized = slugify(value)
+    if len(normalized) > MAX_COMMAND_NAME_LENGTH:
+        raise ValueError(
+            f"command name must be at most {MAX_COMMAND_NAME_LENGTH} characters"
+        )
+    if _COMMAND_NAME_PATTERN.fullmatch(normalized) is None:  # pragma: no cover - slugify invariant
+        raise ValueError("command name must use lowercase ASCII letters, digits, and hyphens")
+    return normalized
+
+
 class ProjectState(BaseModel):
     """Persisted generator answers and enabled capabilities."""
 
@@ -75,6 +90,12 @@ class ProjectState(BaseModel):
     project_slug: str = Field(
         min_length=1, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$", description="Filesystem slug"
     )
+    command_name: str = Field(
+        min_length=1,
+        max_length=MAX_COMMAND_NAME_LENGTH,
+        pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$",
+        description="Generated backend console command",
+    )
     profile: Profile = Field(default=Profile.FULLSTACK, description="Generated component profile")
     auth: bool = Field(default=False, description="Enable database-backed session authentication")
     evented: bool = Field(default=False, description="Enable Redis Streams and outbox processing")
@@ -87,12 +108,28 @@ class ProjectState(BaseModel):
         _reject_unsafe_project_name_characters(value)
         return value
 
+    @field_validator("command_name", mode="before")
+    @classmethod
+    def normalize_persisted_command_name(cls, value: Any) -> str:
+        if not isinstance(value, str):
+            raise ValueError("command name must be a string")
+        return normalize_command_name(value)
+
     @model_validator(mode="before")
     @classmethod
     def resolve_profile_defaults(cls, data: Any) -> Any:
-        if not isinstance(data, dict) or data.get("sample") is not None:
+        if not isinstance(data, dict):
             return data
         resolved = dict(data)
+        schema_version = int(resolved.get("schema_version", CURRENT_STATE_SCHEMA_VERSION))
+        if resolved.get("command_name") is None:
+            # Schema v1/v2 generated the fixed `app` console command. Keeping that
+            # identity while loading lets update --check report the v3 rename.
+            resolved["command_name"] = (
+                "app" if schema_version < 3 else resolved.get("project_slug")
+            )
+        if resolved.get("sample") is not None:
+            return resolved
         profile = Profile(resolved.get("profile", Profile.FULLSTACK))
         resolved["sample"] = profile is not Profile.FRONTEND
         return resolved
@@ -112,6 +149,7 @@ class ProjectState(BaseModel):
         project_name: str,
         *,
         project_slug: str | None = None,
+        command_name: str | None = None,
         profile: Profile = Profile.FULLSTACK,
         auth: bool = False,
         evented: bool = False,
@@ -120,12 +158,16 @@ class ProjectState(BaseModel):
     ) -> Self:
         _reject_unsafe_project_name_characters(project_name)
         resolved_sample = sample if sample is not None else profile is not Profile.FRONTEND
+        resolved_slug = slugify(project_slug or project_name)
         return cls(
             schema_version=CURRENT_STATE_SCHEMA_VERSION,
             template_version=__version__,
             template_digest=current_template_digest(),
             project_name=project_name.strip(),
-            project_slug=slugify(project_slug or project_name),
+            project_slug=resolved_slug,
+            command_name=normalize_command_name(
+                resolved_slug if command_name is None else command_name
+            ),
             profile=profile,
             auth=auth,
             evented=evented,
@@ -136,13 +178,25 @@ class ProjectState(BaseModel):
     def copier_data(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
 
-    def with_current_template_identity(self) -> Self:
-        return self.model_copy(
-            update={
-                "schema_version": CURRENT_STATE_SCHEMA_VERSION,
-                "template_version": __version__,
-                "template_digest": current_template_digest(),
-            }
+    def with_current_template_identity(self, *, command_name: str | None = None) -> Self:
+        """Return the state rendered by the installed template.
+
+        Schema v1/v2 projects used the fixed `app` command. Any mutating
+        Project Forge operation deliberately migrates them to the project slug.
+        """
+
+        target_command = command_name
+        if target_command is None:
+            target_command = self.project_slug if self.schema_version < 3 else self.command_name
+        return type(self).model_validate(
+            self.model_copy(
+                update={
+                    "schema_version": CURRENT_STATE_SCHEMA_VERSION,
+                    "template_version": __version__,
+                    "template_digest": current_template_digest(),
+                    "command_name": normalize_command_name(target_command),
+                }
+            ).model_dump()
         )
 
     @property

@@ -139,6 +139,7 @@ project-forge init DESTINATION [OPTIONS]
 |---|---|---|
 | `--name TEXT` | 目录名 | 面向用户的工程名 |
 | `--slug TEXT` | 根据名称生成 | 小写 ASCII 文件系统/Cookie/Compose 标识 |
+| `--command-name TEXT` | 工程 slug | 生成后端命令，规范化为小写连字符形式 |
 | `--profile frontend\|backend\|fullstack` | `fullstack` | 生成的组件 |
 | `--auth / --no-auth` | 关闭 | 开启 PostgreSQL session 认证 |
 | `--evented / --no-evented` | 关闭 | 开启 outbox 与 Redis Streams |
@@ -165,6 +166,12 @@ project-forge init ../billing-events \
   --profile backend \
   --evented \
   --no-sample
+
+# 展示名/slug 默认生成 content-agent，也可显式设置不同命令
+project-forge init ../content-agent \
+  --name "Content Agent" \
+  --profile backend \
+  --command-name content-agent-worker
 
 # 接入既有 API 的最小前端
 project-forge init ../operations-ui \
@@ -254,22 +261,45 @@ git status --short
 frontend-only 工程不能直接开启 `auth` 或 `evented`，应先增加 backend。用户自有文件会被
 保留，受管文件则依据记录的 baseline 进行三方比较。
 
+## 配置生成命令
+
+新工程默认以 project slug 作为后端 console command，因此 `Content Agent` 会生成
+`content-agent`。Python 包与导入路径仍为 `app`，FastAPI 入口仍为 `app.main:app`。
+通过同一套 Git 干净度与原子更新边界改名：
+
+```bash
+project-forge configure --command-name content-agent-cli -C ../content-agent
+```
+
+frontend-only 工程也可先持久化该名称，后续 `project-forge add backend` 时生效。
+`configure` 不会改写用户自有脚本。
+
 ## 升级生成工程
 
-`update --check` 会渲染并比较当前已安装 CLI 的内置模板。状态 schema 2 记录确定性的模板
-digest，因此即使公开版本仍为 `0.2.0`，也能识别模板内容刷新。该命令不会访问 GitHub 或
+`update --check` 会渲染并比较当前已安装 CLI 的内置模板。状态 schema 3 记录命令名与
+确定性模板 digest，因此公开版本不变时也能识别模板内容刷新。该命令不会访问 GitHub 或
 其他远端，也不会写入受管文件、状态、baseline 或 `.rej`：
 
 ```bash
 uv tool upgrade project-forge
 project-forge update --check ../customer-portal
+project-forge update ../customer-portal --check --json
 project-forge update ../customer-portal
 ```
+
+schema v1/v2 后端工程会在更新前报告有意的 `app → <project-slug>` 破坏性变更。
+执行 `update`、`add`、`enable` 或 `configure` 都会硬切换，不保留 `app` alias，
+也不改写用户自有脚本。JSON 结果稳定输出 status、工程路径、目标模板身份、
+identity 变化、排序后的 changed/conflict/rejection 路径及 breaking changes，并保持 0/1/2/3 退出码。
 
 升级要求 Git 干净，并采用两阶段原子更新。任一受管文件发生冲突时，所有受管文件、状态和
 baseline 都保持不变，只生成相邻的 `.rej`。人工把预期改动合并到目标文件，删除 `.rej`，
 提交解决结果后再重新执行 `project-forge update`。工具不会调用 `git reset`、
 `git clean` 或任何 force 操作。
+
+baseline 具有字节级确定性并保留规范化执行权限；无变化更新不写入任何文件。
+归档上限为 64 MiB 压缩体积、4,096 个成员、单成员 16 MiB 及总解压 128 MiB；
+所有受管写入都拒绝 symlink 与 Windows junction。
 
 ## 安装内置 Codex skill
 
@@ -320,9 +350,9 @@ docker compose --env-file .env.dev -f docker-compose.dev.yml down
 
 ```bash
 cd backend
-uv run app config check --json
-uv run app events status --json
-uv run app events retry-failed --limit 100 --dry-run
+uv run content-agent config check --json
+uv run content-agent events status --json
+uv run content-agent events retry-failed --limit 100 --dry-run
 ```
 
 每个 API 响应都带有 `X-Request-ID`，结构化日志复用该标识，但不记录请求 body 或凭据。
@@ -373,7 +403,7 @@ uv tool install --force --python 3.11 git+https://github.com/yernsun/project-for
 ```
 
 `update --check` 不会主动查询远端。重新安装工具后，它会结合已记录的模板 digest 和真实
-dry render/三方比较，因此能够报告同版本 `0.2.0` 的刷新；发现差异后执行
+dry render/三方比较，因此能够报告同版本刷新；发现差异后执行
 `project-forge update PATH`。Git 干净工作区、全量原子更新及冲突 `.rej` 规则仍然有效。
 
 ### 演进命令提示 Git 工作区不干净
@@ -398,7 +428,9 @@ Project Forge 版本明确采纳其 LTS 后才会进入支持范围。
 ```bash
 uv sync --all-groups
 uv run --frozen python harness/check.py
-uv run --frozen python harness/manage_openapi_contracts.py --check
+uv run --frozen python harness/check.py --mode quality
+uv run --frozen python harness/check.py --mode contracts
+uv run --frozen python harness/check.py --mode compatibility
 uv run --frozen pip-audit
 cd src/project_forge/template/frontend
 npm audit --audit-level=high
@@ -407,7 +439,7 @@ npm audit --audit-level=high
 根测试强制 branch coverage，生成工程严格 harness 强制前后端覆盖率；CI 还包含 macOS/Windows
 CLI smoke、Python 3.11～3.14、受支持 Node LTS、依赖审计、无需 TLS 的生产 Compose 内部
 readiness smoke、wheel 隔离安装以及认证 Compose E2E。发布 tag 还会与 `pyproject.toml`
-版本对齐，并生成 checksum、SBOM 与 provenance；公开版本继续保持 `0.2.0`。
+版本对齐，并为 `0.3.0` 发布生成 checksum、SBOM 与 provenance。
 
 有意修改 API route 或 DTO 后：
 

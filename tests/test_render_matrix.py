@@ -6,6 +6,7 @@ import py_compile
 import re
 import subprocess
 import sys
+import tomllib
 from collections.abc import Iterator
 from html import unescape
 from html.parser import HTMLParser
@@ -148,6 +149,18 @@ def test_every_valid_combination_renders(state: ProjectState, tmp_path: Path) ->
         database_url = production["services"]["migrate"]["environment"]["DATABASE_URL"]
         assert database_url.startswith("${DATABASE_URL:?")
         assert "POSTGRES_PASSWORD" not in database_url
+        assert production["services"]["migrate"]["command"] == [
+            state.command_name,
+            "migrate",
+            "up",
+        ]
+        backend_project = tomllib.loads(
+            (destination / "backend/pyproject.toml").read_text(encoding="utf-8")
+        )
+        assert backend_project["project"]["scripts"] == {
+            state.command_name: "app.cli:main"
+        }
+        assert backend_project["tool"]["fastapi"]["entrypoint"] == "app.main:app"
     workflow = yaml.safe_load(
         (destination / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     )
@@ -257,10 +270,10 @@ def test_generated_readmes_are_runnable_and_profile_specific(
         assert ("uv sync --frozen --all-groups" in content) is state.has_backend
         assert ("npm ci" in content) is state.has_frontend
         assert ("/api/v1/auth/signup" in content) is auth
-        assert ("app auth purge-expired" in content) is auth
+        assert (f"{state.command_name} auth purge-expired" in content) is auth
         assert ("python -m app.events.worker" in content) is evented
-        assert ("app config check --json" in content) is state.has_backend
-        assert ("app events status --json" in content) is evented
+        assert (f"{state.command_name} config check --json" in content) is state.has_backend
+        assert (f"{state.command_name} events status --json" in content) is evented
         assert ("npm run test:coverage" in content) is state.has_frontend
         assert "172.20.0.10" in content
         assert "192.168." not in content
@@ -287,12 +300,53 @@ def test_generated_readmes_are_runnable_and_profile_specific(
             "HARNESS_STRICT",
             "172.20.0.10",
             "X-Request-ID",
-            "app config check --json",
+            f"{state.command_name} config check --json",
         ):
             assert marker in content
         assert "192.168." not in content
         assert "{%" not in content
         assert "{{" not in content
+
+
+def test_explicit_custom_command_reaches_all_console_surfaces(tmp_path: Path) -> None:
+    destination = tmp_path / "project"
+    state = ProjectState.create(
+        "Content Agent",
+        profile=Profile.FULLSTACK,
+        auth=True,
+        evented=True,
+        command_name="Content Agent CLI",
+    )
+    render_fresh(state, destination)
+
+    assert state.command_name == "content-agent-cli"
+    backend_project = tomllib.loads(
+        (destination / "backend/pyproject.toml").read_text(encoding="utf-8")
+    )
+    assert backend_project["project"]["scripts"] == {
+        "content-agent-cli": "app.cli:main"
+    }
+    for relative in (
+        "README.md",
+        "README.zh-CN.md",
+        "FAQ.md",
+        "FAQ.zh-CN.md",
+        "docker-compose.yml",
+        "docker-compose.dev.yml",
+        ".github/workflows/ci.yml",
+        "docs/architecture/auth.md",
+        "docs/architecture/events.md",
+        "docs/architecture/migrations.md",
+        "backend/src/app/db/migration_engine.py",
+    ):
+        content = (destination / relative).read_text(encoding="utf-8")
+        assert "content-agent-cli" in content
+        assert "uv run app " not in content
+        assert '`app migrate' not in content
+        assert '["app", "migrate"' not in content
+    assert '"python", "-m", "app.events.worker"' in (
+        destination / "docker-compose.yml"
+    ).read_text(encoding="utf-8")
 
 
 def test_generated_projects_have_no_source_specific_residue(tmp_path: Path) -> None:
