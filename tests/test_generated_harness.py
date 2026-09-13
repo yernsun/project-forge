@@ -150,6 +150,15 @@ def test_static_generated_harnesses_pass(state: ProjectState, tmp_path: Path) ->
     assert ("auth-compose-e2e" in workflow["jobs"]) is emits_auth_e2e
     assert ("production-compose-smoke" in workflow["jobs"]) is emits_auth_e2e
     assert "security-audit" in workflow["jobs"]
+    security_commands = "\n".join(
+        str(step.get("run", "")) for step in workflow["jobs"]["security-audit"]["steps"]
+    )
+    if state.has_frontend:
+        assert "for attempt in 1 2 3" in security_commands
+        assert "npm audit --audit-level=high" in security_commands
+        assert "npm (warn|error) audit (408|420|429|5[0-9]{2})" in security_commands
+    else:
+        assert "npm audit --audit-level=high" not in security_commands
     if emits_auth_e2e:
         auth_flow = (
             destination / "frontend/tests/e2e/auth-flow.e2e.ts"
@@ -313,7 +322,9 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
     security = workflow["jobs"]["security-audit"]
     security_commands = "\n".join(str(step.get("run", "")) for step in security["steps"])
     assert "pip-audit" in security_commands
+    assert "for attempt in 1 2 3" in security_commands
     assert "npm audit --audit-level=high" in security_commands
+    assert "npm (warn|error) audit (408|420|429|5[0-9]{2})" in security_commands
 
     production = workflow["jobs"]["production-compose-smoke"]
     production_commands = "\n".join(
@@ -334,6 +345,69 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
     assert "cyclonedx-json" in release_commands
     assert "--no-emit-project" in release_commands
     assert "gh release create" in release_commands
+
+
+def test_npm_audit_workflow_retries_only_transient_registry_failures(
+    tmp_path: Path,
+) -> None:
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    audit_step = next(
+        step
+        for step in workflow["jobs"]["security-audit"]["steps"]
+        if step.get("name") == "Audit generated frontend dependencies"
+    )
+    assert audit_step["shell"] == "bash"
+    audit_script = str(audit_step["run"])
+
+    def run_with(fake_npm: str) -> subprocess.CompletedProcess[str]:
+        script = dedent(fake_npm) + "\nsleep() { :; }\n" + audit_script
+        return subprocess.run(
+            ["bash", "-e", "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={"PATH": "/usr/bin:/bin", "RUNNER_TEMP": str(tmp_path)},
+        )
+
+    transient_then_success = run_with(
+        """
+        npm() {
+          if [ "$attempt" -eq 1 ]; then
+            echo "npm warn audit 503 Service Unavailable"
+            return 1
+          fi
+          echo "found 0 vulnerabilities"
+          return 0
+        }
+        """
+    )
+    assert transient_then_success.returncode == 0
+    assert "retrying in 15s" in transient_then_success.stdout
+    assert "found 0 vulnerabilities" in transient_then_success.stdout
+
+    vulnerability = run_with(
+        """
+        npm() {
+          echo "found 1 high severity vulnerability"
+          return 1
+        }
+        """
+    )
+    assert vulnerability.returncode == 1
+    assert vulnerability.stdout.count("found 1 high severity vulnerability") == 1
+    assert "retrying" not in vulnerability.stdout
+
+    persistent_outage = run_with(
+        """
+        npm() {
+          echo "npm warn audit 503 Service Unavailable"
+          return 1
+        }
+        """
+    )
+    assert persistent_outage.returncode == 1
+    assert persistent_outage.stdout.count("Service Unavailable") == 3
+    assert "could not reach the registry after 3 attempts" in persistent_outage.stdout
 
 
 def test_root_harness_exposes_full_quality_contract_and_compatibility_modes() -> None:
