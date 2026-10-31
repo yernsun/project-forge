@@ -460,7 +460,7 @@ type DbPool = AsyncConnectionPool[DbConnection]
     assert (project / frontend_dockerfile_path).read_text(encoding="utf-8").startswith(
         "FROM node:24-bookworm-slim"
     )
-    assert load_state(project).template_version == "0.3.0"
+    assert load_state(project).template_version == "0.3.1"
     assert user_file.read_text(encoding="utf-8") == "preserve me\n"
 
     updated_baseline = tmp_path / "updated-baseline"

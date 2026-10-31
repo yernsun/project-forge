@@ -471,7 +471,7 @@ Root tests enforce branch coverage, generated strict harnesses enforce backend/f
 and CI adds macOS/Windows CLI smoke tests, Python 3.11–3.14, supported Node LTS lines, dependency
 audits, a non-TLS internal production-Compose readiness smoke, wheel isolation, and authenticated
 Compose E2E. Release tags are additionally checked against `pyproject.toml`; the release workflow
-builds checksums, an SBOM, and provenance for the `0.3.0` release.
+builds checksums, an SBOM, and provenance for the `0.3.1` release.
 
 CI audits the generated backend with every optional extra enabled as well as the generator itself.
 Frontend security overrides select fixed `minimatch` 11 and `glob` 14. The OpenAPI CLI preloader

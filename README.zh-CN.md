@@ -451,7 +451,7 @@ npm audit --audit-level=low
 根测试强制 branch coverage，生成工程严格 harness 强制前后端覆盖率；CI 还包含 macOS/Windows
 CLI smoke、Python 3.11～3.14、受支持 Node LTS、依赖审计、无需 TLS 的生产 Compose 内部
 readiness smoke、wheel 隔离安装以及认证 Compose E2E。发布 tag 还会与 `pyproject.toml`
-版本对齐，并为 `0.3.0` 发布生成 checksum、SBOM 与 provenance。
+版本对齐，并为 `0.3.1` 发布生成 checksum、SBOM 与 provenance。
 
 CI 同时审计生成器以及启用全部可选能力的后端依赖。前端通过安全覆盖选择修复后的
 `minimatch` 11 和 `glob` 14。OpenAPI CLI 的预加载适配只在该子进程内为 Redocly 1 提供

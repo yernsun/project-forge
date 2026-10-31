@@ -971,7 +971,7 @@ def test_update_migrates_legacy_state_and_hard_switches_app_command(
     assert applied.exit_code == 0, applied.output
     upgraded = load_state(project)
     assert upgraded.schema_version == 3
-    assert upgraded.template_version == "0.3.0"
+    assert upgraded.template_version == "0.3.1"
     assert upgraded.template_digest == current_template_digest()
     assert upgraded.command_name == "legacy-state"
     backend_project = (project / relative).read_text(encoding="utf-8")

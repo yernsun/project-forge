@@ -6,6 +6,8 @@ detect rebuilt installations without changing the public version.
 
 ## Unreleased
 
+## [0.3.1] - 2026-11-01
+
 ### Added
 
 - Bundle the local `primevue-skilld` snapshot and all 148 reference files in generated repositories
@@ -70,3 +72,4 @@ detect rebuilt installations without changing the public version.
 
 [0.2.0]: https://github.com/yernsun/project-forge/releases/tag/v0.2.0
 [0.3.0]: https://github.com/yernsun/project-forge/releases/tag/v0.3.0
+[0.3.1]: https://github.com/yernsun/project-forge/releases/tag/v0.3.1

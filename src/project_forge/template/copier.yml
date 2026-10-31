@@ -63,7 +63,7 @@ schema_version:
 
 template_version:
   type: str
-  default: 0.3.0
+  default: 0.3.1
   when: false
 
 template_digest:
