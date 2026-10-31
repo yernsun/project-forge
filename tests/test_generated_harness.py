@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -358,6 +359,31 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
     assert "cyclonedx-json" in release_commands
     assert "--no-emit-project" in release_commands
     assert "gh release create" in release_commands
+
+
+def test_packaged_skill_smoke_assertions_match_initialized_projects(tmp_path: Path) -> None:
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    smoke = next(
+        step["run"]
+        for step in workflow["jobs"]["package-command"]["steps"]
+        if step.get("name") == "Smoke-test packaged template and bundled skill"
+    )
+    initialized = checked = 0
+    for line in smoke.splitlines():
+        command = shlex.split(line)
+        if command and command[0] == "project-forge":
+            subprocess.run(
+                [sys.executable, "-m", "project_forge", *command[1:]],
+                cwd=tmp_path,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            initialized += 1
+        elif command[:2] == ["test", "-f"]:
+            assert (tmp_path / command[2]).is_file(), f"missing smoke-test artifact: {command[2]}"
+            checked += 1
+    assert initialized > 0 and checked > 0
 
 
 def test_npm_audit_workflow_retries_only_transient_registry_failures(

@@ -413,6 +413,7 @@ jobs:
           diff -u command-version.txt module-version.txt
       - name: Smoke-test packaged template and bundled skill
         run: |
+          set -euxo pipefail
           project-forge init content-agent --profile backend --no-sample --no-git
           project-forge init wheel-custom --profile backend --no-sample --command-name forge-service --no-git
           project-forge install-skill --destination wheel-smoke/.agents/skills/wheel-smoke
@@ -423,7 +424,7 @@ jobs:
           python content-agent/harness/check.py
           test -f content-agent/backend/src/app/main.py
           test -f wheel-smoke/.agents/skills/wheel-smoke/SKILL.md
-          test -f wheel-smoke/.agents/skills/primevue-skilld/SKILL.md
-          test -f wheel-smoke/.agents/skills/primevue-skilld/references/docs/datatable.md
-          test -f wheel-smoke/.agents/skills/primevue-skilld/references/issues/_INDEX.md
-          test -f wheel-smoke/.agents/skills/primevue-skilld/references/releases/CHANGELOG.md
+          test -f content-agent/.agents/skills/primevue-skilld/SKILL.md
+          test -f content-agent/.agents/skills/primevue-skilld/references/docs/datatable.md
+          test -f content-agent/.agents/skills/primevue-skilld/references/issues/_INDEX.md
+          test -f content-agent/.agents/skills/primevue-skilld/references/releases/CHANGELOG.md

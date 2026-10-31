@@ -24,6 +24,8 @@ detect rebuilt installations without changing the public version.
   deployment dependencies.
 - Adapt Redis 8 async typing and missing DLQ fields, and exclude dependency/build caches before
   Copier traverses the template rather than copying them into temporary renders.
+- Check the bundled PrimeVue skill in the initialized project during wheel smoke tests, separately
+  from the standalone Project Forge skill installation, and trace the failing shell command.
 
 ## [0.3.0] - 2026-09-03
 
