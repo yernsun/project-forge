@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const frontend = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const selectionPath = resolve(frontend, '.api-contract.json')
@@ -19,9 +19,12 @@ const check = process.argv.includes('--check')
 const temporary = check ? await mkdtemp(resolve(tmpdir(), 'project-forge-api-')) : null
 const output = temporary ? resolve(temporary, 'schema.d.ts') : target
 const executable = resolve(frontend, 'node_modules/openapi-typescript/bin/cli.js')
+const compatibility = pathToFileURL(resolve(frontend, 'scripts/openapi-typescript-compat.mjs')).href
 
 try {
-  const result = spawnSync(process.execPath, [executable, source, '--output', output], {
+  const result = spawnSync(process.execPath, [
+    '--import', compatibility, executable, source, '--output', output,
+  ], {
     cwd: frontend,
     encoding: 'utf8',
   })

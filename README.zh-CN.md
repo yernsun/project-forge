@@ -34,6 +34,14 @@ Psycopg 3、PostgreSQL 16、前向迁移和 Repository SQL；前端支持 Node L
 默认 Aura 主题及持久化的跟随系统/浅色/深色切换、Vue Query、仅保存客户端状态的 Pinia，
 以及 `zh-CN`/`en-US` 语言包。
 
+生成仓库会把本机 `primevue-skilld` 及完整的组件文档、issue 和 release 参考资料打包到
+`.agents/skills/primevue-skilld/`，配合工程专用的 `frontend-primevue` skill 使用，不依赖
+用户目录。资料快照对应 4.5.4，补丁差异以安装的 4.5.5 类型声明为准。PrimeVue 4、
+PrimeUIX Themes 1 和 PrimeIcons 7 保持 MIT 许可；PrimeVue 5 的商业许可需要单独评估。
+
+生成前端还会在启动阶段适配局域网 HTTP Origin：浏览器缺少 `crypto.randomUUID()` 时，使用
+`crypto.getRandomValues()` 安全生成 UUID，而不会降级到 `Math.random()`。
+
 所有生成后端还包含 `logs/<domain>/<instance>/` 进程隔离轮转 JSONL 日志、独立的
 business/debug/error/SQL 通道、请求与事件关联、不含参数值的 SQL 耗时、递归 secret
 脱敏、observability skill/rule，以及生成 harness 中的静态日志契约。
@@ -437,13 +445,21 @@ uv run --frozen python harness/check.py --mode contracts
 uv run --frozen python harness/check.py --mode compatibility
 uv run --frozen pip-audit
 cd src/project_forge/template/frontend
-npm audit --audit-level=high
+npm audit --audit-level=low
 ```
 
 根测试强制 branch coverage，生成工程严格 harness 强制前后端覆盖率；CI 还包含 macOS/Windows
 CLI smoke、Python 3.11～3.14、受支持 Node LTS、依赖审计、无需 TLS 的生产 Compose 内部
 readiness smoke、wheel 隔离安装以及认证 Compose E2E。发布 tag 还会与 `pyproject.toml`
 版本对齐，并为 `0.3.0` 发布生成 checksum、SBOM 与 provenance。
+
+CI 同时审计生成器以及启用全部可选能力的后端依赖。前端通过安全覆盖选择修复后的
+`minimatch` 11 和 `glob` 14。OpenAPI CLI 的预加载适配只在该子进程内为 Redocly 1 提供
+可调用的 CommonJS 导出，保留命名导出，不修改安装包文件。Redocly 2 不兼容生成器的
+导入路径；上游支持安全版本后才移除这些覆盖与适配。`openapi-typescript` 7 要求
+TypeScript 5.x，因此保留
+5.9；Vue Test Utils 2.5 的传递依赖要求更高的 Node 补丁版本，因此保留 2.4。修改这些约束
+时重新验证四组 OpenAPI 契约、前端检查和完整生成矩阵。依赖缓存与构建产物在渲染前排除。
 
 有意修改 API route 或 DTO 后：
 

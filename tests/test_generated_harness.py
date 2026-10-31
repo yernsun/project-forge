@@ -155,10 +155,10 @@ def test_static_generated_harnesses_pass(state: ProjectState, tmp_path: Path) ->
     )
     if state.has_frontend:
         assert "for attempt in 1 2 3" in security_commands
-        assert "npm audit --audit-level=high" in security_commands
+        assert "npm audit --audit-level=low" in security_commands
         assert "npm (warn|error) audit (408|420|429|5[0-9]{2})" in security_commands
     else:
-        assert "npm audit --audit-level=high" not in security_commands
+        assert "npm audit --audit-level=low" not in security_commands
     if emits_auth_e2e:
         auth_flow = (
             destination / "frontend/tests/e2e/auth-flow.e2e.ts"
@@ -195,6 +195,19 @@ def test_static_generated_harnesses_pass(state: ProjectState, tmp_path: Path) ->
         assert "docker compose --env-file .env.ci up -d --build" in production_commands
         assert "http://127.0.0.1:8080/health/ready" in production_commands
         assert "/app/logs/api/$(hostname)/business.log" in production_commands
+
+
+def test_generator_security_audit_includes_all_backend_extras() -> None:
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["security-audit"]["steps"]
+    backend_audit = next(
+        step["run"]
+        for step in steps
+        if step.get("name") == "Audit complete generated backend dependency set"
+    )
+    assert "--profile backend --auth --evented --sample" in backend_audit
+    assert "--frozen --all-groups --all-extras" in backend_audit
+    assert "--frozen --no-sync pip-audit" in backend_audit
 
 
 def test_top_level_harness_reports_python_311_syntax_cleanly(tmp_path: Path) -> None:
@@ -323,7 +336,7 @@ def test_root_ci_uses_supported_service_versions_and_frozen_commands() -> None:
     security_commands = "\n".join(str(step.get("run", "")) for step in security["steps"])
     assert "pip-audit" in security_commands
     assert "for attempt in 1 2 3" in security_commands
-    assert "npm audit --audit-level=high" in security_commands
+    assert "npm audit --audit-level=low" in security_commands
     assert "npm (warn|error) audit (408|420|429|5[0-9]{2})" in security_commands
 
     production = workflow["jobs"]["production-compose-smoke"]

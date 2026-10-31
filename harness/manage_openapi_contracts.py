@@ -98,7 +98,15 @@ def generate_types(
     for variant in VARIANTS:
         target = output_directory / f"{variant.filename}.d.ts"
         run(
-            [node, str(cli), str(contracts[variant.filename]), "--output", str(target)],
+            [
+                node,
+                "--import",
+                (frontend / "scripts/openapi-typescript-compat.mjs").resolve().as_uri(),
+                str(cli),
+                str(contracts[variant.filename]),
+                "--output",
+                str(target),
+            ],
             cwd=frontend,
         )
         generated[variant.filename] = target

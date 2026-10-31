@@ -61,6 +61,13 @@ the cookie, CSRF, and gateway contract; configure the Vite/gateway upstream inst
 Authentication forms perform localized client-side email, password, and workspace validation before
 calling the API, while the strict backend DTO remains authoritative. Passwords are never trimmed.
 
+An HTTP page opened through a LAN IP is not a secure browser context, so a browser may expose
+`crypto.getRandomValues()` but omit `crypto.randomUUID()`. `src/polyfills.ts` runs before application
+imports and installs a version 4 UUID implementation backed by `getRandomValues()` when needed.
+Application code should import `createUuid` from `src/shared/uuid.ts` rather than calling the global
+method directly. The adapter preserves native `randomUUID()` in secure contexts and fails closed
+when no cryptographically secure source exists; it never falls back to `Math.random()`.
+
 Production keeps the browser API base URL empty and proxies `/api` at the internal gateway. That
 gateway listens on `${APP_BIND_HOST:-127.0.0.1}:8080` and must remain behind an external TLS
 terminator; do not expose port 8080 directly to the public internet. `APP_ALLOWED_ORIGINS` is the

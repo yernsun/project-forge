@@ -135,11 +135,8 @@ class StreamConsumer:
                             await self._handler(unit_of_work, envelope)
             except Exception as error:
                 with operation_context(operation_id=event_id, event_id=event_id):
-                    attempts = await cast(
-                        Awaitable[int],
-                        self._redis.hincrby(
-                            f"retry:{self._stream}:{self._group}", message_id, 1
-                        ),
+                    attempts = await self._redis.hincrby(
+                        f"retry:{self._stream}:{self._group}", message_id, 1
                     )
                     if attempts >= self._max_attempts:
                         await self._redis.xadd(
@@ -152,11 +149,8 @@ class StreamConsumer:
                             },
                         )
                         await self._redis.xack(self._stream, self._group, message_id)
-                        await cast(
-                            Awaitable[int],
-                            self._redis.hdel(
-                                f"retry:{self._stream}:{self._group}", message_id
-                            ),
+                        await self._redis.hdel(
+                            f"retry:{self._stream}:{self._group}", message_id
                         )
                         log_exception(
                             logger,
@@ -182,11 +176,8 @@ class StreamConsumer:
                 raise
             try:
                 await self._redis.xack(self._stream, self._group, message_id)
-                await cast(
-                    Awaitable[int],
-                    self._redis.hdel(
-                        f"retry:{self._stream}:{self._group}", message_id
-                    ),
+                await self._redis.hdel(
+                    f"retry:{self._stream}:{self._group}", message_id
                 )
             except Exception as error:
                 log_exception(
@@ -240,12 +231,17 @@ class StreamConsumer:
         return processed
 
     async def consume_new(self, *, block_ms: int = 1_000, count: int = 100) -> int:
-        responses = await self._redis.xreadgroup(
-            self._group,
-            self._consumer,
-            {self._stream: ">"},
-            count=count,
-            block=block_ms,
+        # The client uses redis-py's default legacy responses and byte-valued fields.
+        # Redis 8's annotation also covers opt-in RESP3/unified response shapes.
+        responses = cast(
+            list[tuple[bytes | str, list[tuple[bytes | str, dict[bytes, bytes]]]]],
+            await self._redis.xreadgroup(
+                self._group,
+                self._consumer,
+                {self._stream: ">"},
+                count=count,
+                block=block_ms,
+            ),
         )
         processed = 0
         for _stream, messages in responses:
@@ -277,6 +273,8 @@ class StreamConsumer:
         if not entries:
             return None
         _entry_id, fields = entries[0]
+        if not fields:
+            raise ValueError("DLQ entry does not contain a payload")
         payload = fields.get(b"payload") or fields.get("payload")
         original_id = fields.get(b"messageId") or fields.get("messageId")
         if payload is None:
@@ -286,10 +284,7 @@ class StreamConsumer:
         await self._redis.xdel(dlq, dlq_message_id)
         if original_id is not None:
             normalized = original_id.decode() if isinstance(original_id, bytes) else original_id
-            await cast(
-                Awaitable[int],
-                self._redis.hdel(f"retry:{self._stream}:{self._group}", normalized),
-            )
+            await self._redis.hdel(f"retry:{self._stream}:{self._group}", normalized)
         return replayed.decode() if isinstance(replayed, bytes) else str(replayed)
 
 

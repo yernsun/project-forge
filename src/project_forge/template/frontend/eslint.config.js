@@ -20,6 +20,27 @@ export default tseslint.config(
       'vue/singleline-html-element-content-newline': 'off',
       'vue/html-self-closing': 'off',
       '@typescript-eslint/no-explicit-any': 'error',
+      'no-restricted-properties': [
+        'error',
+        {
+          object: 'crypto',
+          property: 'randomUUID',
+          message: "Use createUuid from '@/shared/uuid' so LAN HTTP remains supported.",
+        },
+      ],
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector:
+            "MemberExpression[object.type='MemberExpression'][object.object.name='globalThis'][object.property.name='crypto'][property.name='randomUUID']",
+          message: "Use createUuid from '@/shared/uuid' so LAN HTTP remains supported.",
+        },
+        {
+          selector:
+            "MemberExpression[object.type='MemberExpression'][object.object.name='window'][object.property.name='crypto'][property.name='randomUUID']",
+          message: "Use createUuid from '@/shared/uuid' so LAN HTTP remains supported.",
+        },
+      ],
     },
   },
   {

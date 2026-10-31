@@ -5,6 +5,7 @@ import json
 import os
 import py_compile
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -69,6 +70,23 @@ def valid_states() -> Iterator[ProjectState]:
 STATES = tuple(valid_states())
 
 
+def test_dependency_caches_are_excluded_before_template_rendering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    template = tmp_path / "template"
+    source = Path(__file__).resolve().parents[1] / "src/project_forge/template"
+    shutil.copytree(source, template)
+    caches = ("frontend/node_modules", "frontend/dist", "frontend/coverage", "backend/.venv")
+    for relative in caches:
+        cache = template / relative
+        cache.mkdir(parents=True)
+        (cache / "broken.txt.jinja").write_text("{% invalid_cached_dependency %}", encoding="utf-8")
+    monkeypatch.setattr("project_forge.renderer.template_path", lambda: template)
+    destination = tmp_path / "project"
+    render_fresh(ProjectState.create("Cache Hygiene"), destination)
+    assert all(not (destination / relative).exists() for relative in caches)
+
+
 @pytest.mark.parametrize("state", STATES, ids=lambda state: state.project_slug)
 def test_every_valid_combination_renders(state: ProjectState, tmp_path: Path) -> None:
     destination = tmp_path / "project"
@@ -126,12 +144,22 @@ def test_every_valid_combination_renders(state: ProjectState, tmp_path: Path) ->
     assert (destination / "frontend/tests/items.spec.ts").exists() is (
         state.has_frontend and state.sample
     )
+    for relative in (
+        "frontend/src/polyfills.ts",
+        "frontend/src/shared/uuid.ts",
+        "frontend/tests/uuid.spec.ts",
+    ):
+        assert (destination / relative).exists() is state.has_frontend
     assert (destination / "frontend/src/features/items").exists() is (
         state.has_frontend and state.sample
     )
     assert not (destination / ".project-forge").exists()
     assert (destination / ".agents/rules/15-observability.md").is_file()
     assert (destination / ".agents/skills/instrument-observability/SKILL.md").is_file()
+    assert (destination / ".agents/skills/primevue-skilld/SKILL.md").is_file()
+    assert (
+        destination / ".agents/skills/primevue-skilld/references/docs/_INDEX.md"
+    ).is_file()
     assert (destination / "docs/architecture/logging.md").is_file()
     for cache in ("node_modules", "dist", "coverage"):
         assert not (destination / "frontend" / cache).exists()
@@ -214,9 +242,25 @@ def test_every_valid_combination_renders(state: ProjectState, tmp_path: Path) ->
                 )
             )
         main_source = (destination / "frontend/src/main.ts").read_text(encoding="utf-8")
+        assert main_source.startswith(
+            "// Keep browser compatibility initialization ahead of application and "
+            "dependency imports.\n"
+            "import './polyfills'\n"
+        )
         assert "import Aura from '@primeuix/themes/aura'" in main_source
         assert "preset: Aura" in main_source
         assert "darkModeSelector: '.app-dark'" in main_source
+        uuid_source = (destination / "frontend/src/shared/uuid.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "getRandomValues(new Uint8Array(16))" in uuid_source
+        assert "Object.defineProperty(cryptoApi, 'randomUUID'" in uuid_source
+        assert "Math.random" not in uuid_source
+        eslint_config = (destination / "frontend/eslint.config.js").read_text(
+            encoding="utf-8"
+        )
+        assert "no-restricted-properties" in eslint_config
+        assert "Use createUuid from '@/shared/uuid'" in eslint_config
         assert (destination / "frontend/src/shared/theme.ts").is_file()
         assert (destination / "frontend/src/shared/stores/theme.ts").is_file()
         assert (destination / "frontend/tests/theme.spec.ts").is_file()
@@ -298,6 +342,7 @@ def test_generated_readmes_are_runnable_and_profile_specific(
         assert ("logs/<domain>/<instance>" in content) is state.has_backend
         assert (f"{state.command_name} events status --json" in content) is evented
         assert ("npm run test:coverage" in content) is state.has_frontend
+        assert ("crypto.randomUUID()" in content) is state.has_frontend
         assert "172.20.0.10" in content
         assert "192.168." not in content
         assert ("FRONTEND_API_UPSTREAM" in content) is (
@@ -325,6 +370,7 @@ def test_generated_readmes_are_runnable_and_profile_specific(
             "X-Request-ID",
             "APP_LOG_INSTANCE_ID",
             "runtime-logs",
+            "crypto.randomUUID is not a function",
             f"{state.command_name} config check --json",
         ):
             assert marker in content

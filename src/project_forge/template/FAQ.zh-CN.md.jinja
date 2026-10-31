@@ -101,6 +101,17 @@ docker compose --env-file .env.dev -f docker-compose.dev.yml up -d --build
 然后访问 `http://172.20.0.10:8173`，并将示例地址替换为服务器稳定的局域网地址。
 不要把 `0.0.0.0` 当作浏览器 URL 或允许的 Origin；它只是监听地址。
 
+### 为什么局域网 HTTP 会出现 `crypto.randomUUID is not a function`？
+
+`crypto.randomUUID()` 只在安全浏览器上下文中暴露，而通过局域网 IP 打开的 HTTP 页面不属于
+安全上下文。生成前端会先加载 `src/polyfills.ts`，当原生方法缺失时安装由
+`crypto.getRandomValues()` 驱动的 UUID v4 实现，再启动应用。已有生成项目可通过
+`project-forge update` 获得该适配。
+
+应用代码必须使用 `src/shared/uuid.ts` 中的 `createUuid`，不要直接调用全局方法。适配器绝不
+使用 `Math.random()`；浏览器完全没有安全随机源时会明确失败。此兼容层不会让 HTTP 成为可信
+传输，生产前端仍应部署在 HTTPS 后面。
+
 ### 什么情况会返回 `origin_not_allowed`？
 
 注册、登录以及所有已认证的 unsafe 请求都要求允许的 `Origin`，没有 Origin 时回退检查
@@ -353,6 +364,7 @@ Cookie jar 或 secret。
 | 现象/错误码 | 优先检查 |
 |---|---|
 | FastAPI 显示 production mode | Compose 文件，以及 `fastapi dev`/`fastapi run` command |
+| `crypto.randomUUID is not a function` | 更新生成项目、改用 `createUuid`、确认存在 `getRandomValues()` |
 | `origin_not_allowed` | 浏览器协议/主机/端口与 API 容器 allowed origins 是否精确一致 |
 | `request_validation_failed` | JSON Content-Type、有效邮箱、密码长度、`workspaceName`、额外字段 |
 | `signup_disabled` | `APP_SIGNUP_ENABLED` 及生产环境是否应开放注册 |

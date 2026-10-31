@@ -36,6 +36,15 @@ with Vue 3, Vite, TypeScript, PrimeVue using Aura with persisted system/light/da
 Vue Query, Pinia for client-owned state, and
 `zh-CN`/`en-US` catalogs.
 
+Generated repositories bundle `primevue-skilld` with its complete local docs, issues, and release
+references under `.agents/skills/primevue-skilld/`, alongside the project-specific
+`frontend-primevue` skill. The bundled snapshot documents 4.5.4; installed 4.5.5 types govern
+patch-level differences. PrimeVue 4, PrimeUIX Themes 1, and PrimeIcons 7 stay on their MIT-licensed
+lines; PrimeVue 5 introduces a separate commercial license.
+
+Generated frontend bootstrap code also provides a cryptographically secure UUID compatibility layer
+for LAN HTTP origins where browsers expose `crypto.getRandomValues()` but not `crypto.randomUUID()`.
+
 Every generated backend also includes process-isolated rotated JSONL logs at
 `logs/<domain>/<instance>/`, separate business/debug/error/SQL channels, request and event
 correlation, parameter-free SQL timing, recursive secret redaction, an observability skill/rule,
@@ -455,7 +464,7 @@ uv run --frozen python harness/check.py --mode contracts
 uv run --frozen python harness/check.py --mode compatibility
 uv run --frozen pip-audit
 cd src/project_forge/template/frontend
-npm audit --audit-level=high
+npm audit --audit-level=low
 ```
 
 Root tests enforce branch coverage, generated strict harnesses enforce backend/frontend coverage,
@@ -463,6 +472,16 @@ and CI adds macOS/Windows CLI smoke tests, Python 3.11–3.14, supported Node LT
 audits, a non-TLS internal production-Compose readiness smoke, wheel isolation, and authenticated
 Compose E2E. Release tags are additionally checked against `pyproject.toml`; the release workflow
 builds checksums, an SBOM, and provenance for the `0.3.0` release.
+
+CI audits the generated backend with every optional extra enabled as well as the generator itself.
+Frontend security overrides select fixed `minimatch` 11 and `glob` 14. The OpenAPI CLI preloader
+adapts minimatch's callable CommonJS export for Redocly 1 within that child process. It preserves
+named exports and never rewrites installed packages. Keep the overrides and adapter until upstream
+tools support patched versions themselves; Redocly 2 is incompatible with the generator's imports.
+TypeScript stays on 5.9 because `openapi-typescript` 7 requires 5.x; Vue Test Utils stays on 2.4
+because its 2.5 dependency tree requires newer Node patch releases than this template supports.
+Re-run all four OpenAPI contracts, frontend checks, and the full render matrix when changing these
+constraints. Dependency caches and build outputs are excluded before template rendering.
 
 After an intentional API route or DTO change:
 

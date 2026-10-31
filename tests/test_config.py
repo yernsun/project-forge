@@ -118,11 +118,14 @@ def test_python_runtime_contracts_target_311_and_locks_match() -> None:
         dependency.startswith("pytest-cov")
         for dependency in backend_project["dependency-groups"]["dev"]
     )
-    assert "pytest>=9.0.3,<10" in root_project["dependency-groups"]["dev"]
+    assert "pytest>=9.2,<10" in root_project["dependency-groups"]["dev"]
     assert "pytest-xdist>=3.8,<4" in root_project["dependency-groups"]["dev"]
-    assert "pytest>=9.0.3,<10" in backend_project["dependency-groups"]["dev"]
-    assert "pytest-asyncio>=1.3,<2" in backend_project["dependency-groups"]["dev"]
-    assert "httpx2>=2.12,<3" in backend_project["dependency-groups"]["dev"]
+    assert "pytest>=9.2,<10" in backend_project["dependency-groups"]["dev"]
+    assert "pytest-asyncio>=1.4.1,<2" in backend_project["dependency-groups"]["dev"]
+    assert "httpx2>=2.16,<3" in backend_project["dependency-groups"]["dev"]
+    backend_packages = {package["name"] for package in backend_lock["package"]}
+    assert "fastapi-cli" in backend_packages
+    assert "fastapi-cloud-cli" not in backend_packages
     root_pytest_options = root_project["tool"]["pytest"]["ini_options"]["addopts"]
     for option in (
         "--cov=project_forge",
@@ -157,12 +160,18 @@ def test_frontend_runtime_range_uses_node_22_type_floor_and_node_24_image() -> N
 
     assert package["engines"]["node"] == ">=22.13 <23 || >=24 <25"
     assert locked_root["engines"] == package["engines"]
-    assert package["devDependencies"]["@types/node"] == "^22.12.0"
-    assert locked_root["devDependencies"]["@types/node"] == "^22.12.0"
+    assert package["devDependencies"]["@types/node"].startswith("^22.")
+    assert locked_root["devDependencies"] == package["devDependencies"]
+    assert locked_root["dependencies"] == package["dependencies"]
     assert locked_node_types["version"].startswith("22.")
     assert package["devDependencies"]["eslint"].startswith("^10.")
     assert locked_root["devDependencies"]["eslint"].startswith("^10.")
     assert package["scripts"]["test:coverage"] == "vitest run --coverage"
+    assert package["devDependencies"]["vitest"] == package["devDependencies"][
+        "@vitest/coverage-v8"
+    ]
+    for dependency, major in (("primevue", "4"), ("@primeuix/themes", "1"), ("primeicons", "7")):
+        assert package["dependencies"][dependency].startswith(f"^{major}.")
     assert (frontend / "Dockerfile").read_text(encoding="utf-8").startswith(
         "FROM node:24-bookworm-slim"
     )

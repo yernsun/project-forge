@@ -74,6 +74,13 @@ jobs:
       - run: uv sync --all-groups --frozen
       - name: Audit locked Python environment
         run: uv run --frozen pip-audit
+      - name: Audit complete generated backend dependency set
+        shell: bash
+        run: |
+          fixture="${RUNNER_TEMP}/project-forge-security"
+          uv run --frozen project-forge init "$fixture" --profile backend --auth --evented --sample --no-git
+          uv sync --project "$fixture/backend" --frozen --all-groups --all-extras
+          uv run --project "$fixture/backend" --frozen --no-sync pip-audit
       - name: Audit generated frontend dependencies
         working-directory: src/project_forge/template/frontend
         shell: bash
@@ -81,7 +88,7 @@ jobs:
           audit_log="${RUNNER_TEMP:-/tmp}/npm-audit.log"
           for attempt in 1 2 3; do
             set +e
-            npm audit --audit-level=high 2>&1 | tee "$audit_log"
+            npm audit --audit-level=low 2>&1 | tee "$audit_log"
             audit_status="${PIPESTATUS[0]}"
             set -e
 
@@ -416,3 +423,7 @@ jobs:
           python content-agent/harness/check.py
           test -f content-agent/backend/src/app/main.py
           test -f wheel-smoke/.agents/skills/wheel-smoke/SKILL.md
+          test -f wheel-smoke/.agents/skills/primevue-skilld/SKILL.md
+          test -f wheel-smoke/.agents/skills/primevue-skilld/references/docs/datatable.md
+          test -f wheel-smoke/.agents/skills/primevue-skilld/references/issues/_INDEX.md
+          test -f wheel-smoke/.agents/skills/primevue-skilld/references/releases/CHANGELOG.md

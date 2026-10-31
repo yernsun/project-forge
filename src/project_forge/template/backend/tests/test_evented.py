@@ -417,6 +417,12 @@ async def test_consumer_run_loop_and_dlq_replay_paths() -> None:
     replay = _consumer(redis)
     assert await replay.replay_dlq("1000-0") is None
 
+    redis.xrange.return_value = [(b"1000-0", None)]
+    with pytest.raises(ValueError, match="does not contain a payload"):
+        await replay.replay_dlq("1000-0")
+    redis.xadd.assert_not_awaited()
+    redis.xdel.assert_not_awaited()
+
     redis.xrange.return_value = [(b"1000-0", {b"messageId": b"original-0"})]
     with pytest.raises(ValueError, match="does not contain a payload"):
         await replay.replay_dlq("1000-0")

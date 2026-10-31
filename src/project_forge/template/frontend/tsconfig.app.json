@@ -3,7 +3,6 @@
   "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.vue", "tests/**/*.ts"],
   "compilerOptions": {
     "composite": true,
-    "baseUrl": ".",
     "paths": { "@/*": ["./src/*"] },
     "resolveJsonModule": true,
     "noUncheckedIndexedAccess": true,

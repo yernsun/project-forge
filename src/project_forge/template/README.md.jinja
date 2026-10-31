@@ -21,6 +21,20 @@ For Docker, LAN, Origin, cookie, authentication, and environment troubleshooting
 `.project-forge.yml` records this selection; `.project-forge/baseline.tar.gz` supports controlled
 three-way updates. Do not edit either file manually.
 
+The repository includes [primevue-skilld](.agents/skills/primevue-skilld/SKILL.md) and its complete
+local docs, issues, and release references, alongside the project-specific `frontend-primevue`
+skill. The reference snapshot documents 4.5.4; installed 4.5.5 types govern patch-level differences.
+PrimeVue 4, PrimeUIX Themes 1, and PrimeIcons 7 stay on their MIT-licensed lines. PrimeVue 5 requires
+a separate commercial-license and migration decision.
+
+Dependency locks include security overrides for `glob` 14 and `minimatch` 11. An OpenAPI CLI
+preloader adapts minimatch's callable export for Redocly 1 only within that child process, preserving
+named exports without rewriting installed packages. Keep the overrides and adapter until upstream
+tools support patched releases. TypeScript 5.9 matches the OpenAPI generator's peer
+range; Vue Test Utils 2.4 and jsdom 29 preserve the Node 22.13+/24 runtime floor. CI audits the
+selected backend extras and rejects frontend vulnerabilities at every severity. Re-run the harness
+and OpenAPI drift checks when changing dependency constraints or overrides.
+
 ## Prerequisites
 
 - Git and Docker Engine with Compose v2 for the complete workflow.
@@ -33,6 +47,10 @@ Project Forge tests Python 3.11 through 3.14 and the supported Node 22 and Node 
 Node 22 type definitions deliberately keep application code on the oldest supported API surface.
 Odd-numbered releases and new even-numbered releases that have not reached LTS are outside the
 support contract.
+{% if profile != 'backend' %}
+The frontend bootstrap includes a cryptographically secure UUID compatibility layer for LAN HTTP
+origins where browsers expose `crypto.getRandomValues()` but not `crypto.randomUUID()`.
+{% endif %}
 
 Check the profile-aware toolchain after committing the generated baseline:
 
@@ -184,7 +202,7 @@ npm run test:coverage
 npm run build
 npm run api:check
 npm run i18n:check
-npm audit --audit-level=high
+npm audit --audit-level=low
 ```
 {% endif %}
 

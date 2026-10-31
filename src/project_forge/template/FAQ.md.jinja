@@ -105,6 +105,18 @@ docker compose --env-file .env.dev -f docker-compose.dev.yml up -d --build
 Then browse to `http://172.20.0.10:8173`. Replace the address with the server's stable LAN address.
 Do not use `0.0.0.0` as a browser URL or allowed origin; it is only a listen address.
 
+### Why can LAN HTTP report `crypto.randomUUID is not a function`?
+
+`crypto.randomUUID()` is exposed only in a secure browser context, while an HTTP page opened through
+a LAN IP is not secure-context eligible. Generated frontends load `src/polyfills.ts` before the
+application and install a version 4 UUID implementation backed by `crypto.getRandomValues()` when
+the native method is absent. Existing generated projects receive it through `project-forge update`.
+
+Application code must use `createUuid` from `src/shared/uuid.ts` instead of calling the global method
+directly. The adapter never uses `Math.random()` and fails explicitly if the browser has no secure
+random source. This compatibility support does not make HTTP a trusted transport; deploy production
+frontends behind HTTPS.
+
 ### What causes `origin_not_allowed`?
 
 Authentication signup/login and every authenticated unsafe request require an allowed `Origin`,
@@ -364,6 +376,7 @@ can distinguish generated changes from local ones. Never commit `.env`, cookie j
 | Symptom/code | First checks |
 |---|---|
 | FastAPI reports production mode | Compose file and `fastapi dev` versus `fastapi run` command |
+| `crypto.randomUUID is not a function` | Update the generated project; use `createUuid`; confirm `getRandomValues()` exists |
 | `origin_not_allowed` | Exact browser scheme/host/port versus API container allowed origins |
 | `request_validation_failed` | JSON Content-Type, valid email, password length, `workspaceName`, extra fields |
 | `signup_disabled` | `APP_SIGNUP_ENABLED` and whether production registration should be open |

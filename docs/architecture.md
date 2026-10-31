@@ -61,6 +61,9 @@ preference, and per-user workspace selection in Pinia, DTO types in one of four 
 contracts, and locale state in one
 i18n module that also updates PrimeVue's locale object. Its application shell has explicit loading,
 guest, and authenticated states; protected queries do not mount for guests.
+Before application imports run, its browser compatibility bootstrap fills a missing
+`crypto.randomUUID()` with an RFC 4122 version 4 implementation backed only by
+`crypto.getRandomValues()`, keeping LAN HTTP development functional without weak randomness.
 
 CI treats every valid render as a product: Python 3.13 runs the complete parallelized render/quality
 matrix, while 3.11, 3.12, and 3.14 run the compatibility-marked CLI, state-migration, and update

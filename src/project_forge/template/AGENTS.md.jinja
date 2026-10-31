@@ -2,6 +2,10 @@
 
 Follow `.agents/rules/` before editing. Rules override documentation.
 
+For frontend work, use `.agents/skills/frontend-primevue/SKILL.md` together with the bundled
+`.agents/skills/primevue-skilld/SKILL.md`. Its docs, issues, and release references are included in
+this repository; no local user skill installation is required.
+
 ## Architecture
 
 - Services own transaction boundaries and business workflows.
@@ -14,6 +18,8 @@ Follow `.agents/rules/` before editing. Rules override documentation.
 - API handlers validate transport data and delegate to Services.
 - Durable state plus outbound events share the PostgreSQL outbox transaction boundary.
 - Frontend server state belongs in Vue Query; Pinia is only for client-owned state.
+- Frontend UUID generation goes through `src/shared/uuid.ts`; raw `crypto.randomUUID()` calls are
+  forbidden because development over LAN HTTP is not a secure browser context.
 - External JSON uses camelCase; internal Python and TypeScript implementation names follow their
   language conventions.
 - Logs are isolated by process domain and instance. Services log committed business outcomes,

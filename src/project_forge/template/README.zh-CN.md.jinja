@@ -21,6 +21,17 @@ Docker、局域网、Origin、Cookie、认证和环境排障见
 `.project-forge.yml` 保存这组选择，`.project-forge/baseline.tar.gz` 用于受控三方更新。
 不要手工修改这两个文件。
 
+仓库自带 [primevue-skilld](.agents/skills/primevue-skilld/SKILL.md) 及完整的本地组件文档、
+issue 和 release 参考资料，与工程专用的 `frontend-primevue` skill 配合使用，不依赖用户
+目录。资料快照对应 4.5.4，补丁差异以安装的 4.5.5 类型声明为准。PrimeVue 4、PrimeUIX
+Themes 1 和 PrimeIcons 7 保持 MIT 许可；PrimeVue 5 的商业许可和迁移需单独评估。
+
+依赖锁文件包含 `glob` 14 和 `minimatch` 11 的安全覆盖。OpenAPI CLI 只在类型生成子进程
+内适配 Redocly 1 所需的可调用导出，保留命名导出，不修改安装包文件；上游支持安全
+版本后才移除覆盖与适配。TypeScript 5.9 满足 OpenAPI 生成器的 peer 范围，Vue Test Utils 2.4 和
+jsdom 29 保持 Node 22.13+/24 兼容下限。CI 审计当前启用的后端能力，并拒绝所有严重级别
+的前端已知漏洞。调整依赖约束或覆盖版本后，重新运行 harness 与 OpenAPI 漂移检查。
+
 ## 环境要求
 
 - 完整工作流需要 Git、Docker Engine 和 Compose v2。
@@ -32,6 +43,10 @@ Docker、局域网、Origin、Cookie、认证和环境排障见
 覆盖 Python 3.11～3.14，以及当前受支持的 Node 22 与 Node 24 LTS。保留 Node 22 类型定义
 是为了将应用代码限制在最低支持版本已有的 API 表面。奇数版本以及尚未进入 LTS 的新偶数
 版本不属于兼容承诺。
+{% if profile != 'backend' %}
+前端启动阶段会适配局域网 HTTP Origin：浏览器缺少 `crypto.randomUUID()` 时，使用
+`crypto.getRandomValues()` 安全生成 UUID，而不会降级到 `Math.random()`。
+{% endif %}
 
 提交生成基线后，执行与 profile 匹配的环境检查：
 
@@ -180,7 +195,7 @@ npm run test:coverage
 npm run build
 npm run api:check
 npm run i18n:check
-npm audit --audit-level=high
+npm audit --audit-level=low
 ```
 
 ### 刷新前端 API 类型

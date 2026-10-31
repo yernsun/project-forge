@@ -93,7 +93,7 @@ services:
     restart: unless-stopped
 
 {% endif %}  gateway:
-    image: nginx:1.27-alpine
+    image: nginx:1.30.6-alpine
     restart: unless-stopped
     environment:
       NGINX_ENVSUBST_FILTER: ^API_UPSTREAM$

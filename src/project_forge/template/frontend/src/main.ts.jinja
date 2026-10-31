@@ -1,3 +1,6 @@
+// Keep browser compatibility initialization ahead of application and dependency imports.
+import './polyfills'
+
 import { VueQueryPlugin } from '@tanstack/vue-query'
 import Aura from '@primeuix/themes/aura'
 import { createPinia } from 'pinia'

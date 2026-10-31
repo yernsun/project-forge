@@ -1,5 +1,18 @@
 _templates_suffix: .jinja
 _answers_file: .project-forge/copier-answers.yml
+_exclude:
+  - copier.yaml
+  - copier.yml
+  - "~*"
+  - "*.py[co]"
+  - __pycache__
+  - .git
+  - .DS_Store
+  - .svn
+  - frontend/node_modules
+  - frontend/dist
+  - frontend/coverage
+  - backend/.venv
 
 project_name:
   type: str
