@@ -13,9 +13,9 @@ authors = [{ name = "Project Forge maintainers" }]
 dependencies = [
   "copier>=9.19.1,<10",
   "packaging>=26.3,<27",
-  "pydantic>=2.14.2,<3",
+  "pydantic>=2.14.3,<3",
   "PyYAML>=6.0.3,<7",
-  "typer>=0.27.3,<1",
+  "typer>=0.29.0,<1",
 ]
 
 [project.urls]
@@ -31,8 +31,8 @@ dev = [
   "pytest>=9.2,<10",
   "pytest-cov>=7.1,<8",
   "pytest-xdist>=3.8,<4",
-  "ruff>=0.17.3,<1",
-  "types-PyYAML>=6.0.12.20261030,<7",
+  "ruff>=0.17.4,<1",
+  "types-PyYAML>=6.0.12.20261103,<7",
 ]
 
 [tool.hatch.build.targets.wheel]
